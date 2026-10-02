@@ -1,0 +1,8 @@
+{
+  "description": "protocol 仓库的合成测试向量快照；独立 clone server 也可执行，不含真实秘密。",
+  "upstream": "https://github.com/harmonia-vault/protocol/tree/main/vectors",
+  "sha256": {
+    "signatures-v1.json": "9542c3a512af0fd2cfcce9a18f938975736619fc61192803dcb9fe0e271413cf",
+    "device-session-v1.json": "e652c70e208af6e627019e8ccfb28b45f346df001242c87fbd64ab7d7df5f28b"
+  }
+}

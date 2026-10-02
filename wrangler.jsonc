@@ -1,0 +1,41 @@
+{
+  "name": "harmonia-server",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-02",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ACCOUNTS",
+        "class_name": "AccountVault"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "AccountVault"
+      ]
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DIRECTORY",
+      "database_name": "harmonia-directory",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "vars": {
+    "ALLOW_REGISTRATION": "false",
+    "REQUIRE_EMAIL_VERIFICATION": "true"
+  },
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true
+    }
+  }
+}
