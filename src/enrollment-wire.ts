@@ -1,3 +1,4 @@
+import type { EnrollmentApprovalV2 } from "./issuer-proof.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { Fault, type Account, type Device, type SignedGrant } from "./model.js";
 import { bytes, generation, grantBytes, identifier, verify } from "./protocol.js";
@@ -23,13 +24,13 @@ export interface EnrollmentCertificate {
   approverSignature: string; initiatorSignature?: string;
 }
 export interface PairingRecord {
-  idempotencyKey: string; initiatorSessionHash: string; context: PairingContext;
+  idempotencyKey: string; initiatorSessionHash: string; context: PairingContext; certificateVersion?: "2";
   messages: Partial<Record<"initiator" | "approver", string>>; confirmations: Partial<Record<"initiator" | "approver", string>>;
-  approval?: EnrollmentCertificate; sequence?: number;
+  approval?: EnrollmentCertificate | EnrollmentApprovalV2; sequence?: number;
 }
 export type EnrollmentAccount = Account & {
   trustRoot?: TrustRoot; vaultInitializations?: Record<string, InitializationRecord>;
-  pairingSessions?: Record<string, PairingRecord>; deviceEnrollments?: Record<string, EnrollmentCertificate>;
+  pairingSessions?: Record<string, PairingRecord>; deviceEnrollments?: Record<string, EnrollmentCertificate | EnrollmentApprovalV2>;
 };
 export function exact(value: unknown, fields: string[]): asserts value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join("|") !== [...fields].sort().join("|")) throw new Fault(400, "fields_invalid");

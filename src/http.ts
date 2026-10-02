@@ -6,6 +6,7 @@ import { enrollmentRoute } from "./http-enrollment.js";
 import { NotificationAuthority } from "./notifications.js";
 import { environmentRoute } from "./http-environments.js";
 export function bodyLimit(method: string, pathname: string): number {
+  if (method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/pairings-v2\/[A-Za-z0-9._:-]+\/approve$/.test(pathname)) return 262144;
   return method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/environment-changes$/.test(pathname) ? 1_000_000 : 100_000;
 }
 export async function body(request: Request, maxBody = 100_000): Promise<Record<string, unknown>> {

@@ -1,3 +1,4 @@
+import { enrollmentV2Fields, issuerProofCapability, issuerProofStillCurrent, type EnrollmentApprovalV2, type IssuerProof } from "./issuer-proof.js";
 import type { Account, Auth, SignedGrant } from "./model.js";
 import { Fault, grantKey } from "./model.js";
 import type { Store } from "./store.js";
@@ -7,6 +8,8 @@ import { canonical, enrollmentFields, exact, initializationFields, initializatio
   type EnrollmentAccount, type EnrollmentCertificate, type InitializationProposal, type InitializationRecord, type PairingRecord } from "./enrollment-wire.js";
 export interface LoginAuth { token: string; accountGeneration: string }
 export interface PairingProposal { idempotencyKey: string; deviceId: string; signingPublicKey: string; receivingPublicKey: string; approverDeviceId: string }
+export interface PairingProposalV2 extends PairingProposal { certificateVersion: "2"; capabilities: string[] }
+export interface ApprovalRequestV2 { certificateVersion: "2"; capabilities: string[]; grants: SignedGrant[]; transcriptHash: string; issuerProof: IssuerProof; signature: string }
 export interface Relay { side: "initiator" | "approver"; kind: "message" | "confirmation"; payload: string; signature: string }
 function empty(a: EnrollmentAccount): void {
   if (a.trustRoot || a.recoverySigningPublicKey || Object.keys(a.devices).length || Object.keys(a.environments).length ||
@@ -36,6 +39,10 @@ function approvalStillValid(a: EnrollmentAccount, r: PairingRecord, grants: Sign
     if (authority.expiresAt !== "0" && (g.expiresAt === "0" || BigInt(g.expiresAt) > BigInt(authority.expiresAt))) throw new Fault(403, "expiry_escalation");
     verify(c.approverSigningPublicKey, grantBytes(g), signed.signature);
   }
+}
+function requireV1Root(a: EnrollmentAccount, r: PairingRecord): void {
+  const root = a.trustRoot, c = r.context;
+  if (!root || root.rootDeviceId !== c.approverDeviceId || root.rootSigningPublicKey !== c.approverSigningPublicKey || root.rootReceivingPublicKey !== c.approverReceivingPublicKey) throw new Fault(403, "issuer_proof_capability_required");
 }
 export class EnrollmentService {
   constructor(readonly store: Store, private readonly requireVerifiedEmail = true, private readonly clock = () => Math.floor(Date.now() / 1000)) {}
@@ -102,14 +109,15 @@ export class EnrollmentService {
       return { ...rootView(accountId, r), replayed: false };
     });
   }
-  async beginPairing(accountId: string, auth: LoginAuth, proposal: PairingProposal): Promise<Record<string, unknown>> {
-    exact(proposal, ["idempotencyKey", "deviceId", "signingPublicKey", "receivingPublicKey", "approverDeviceId"]);
+  async beginPairing(accountId: string, auth: LoginAuth, proposal: PairingProposal | PairingProposalV2, version: "1" | "2" = "1"): Promise<Record<string, unknown>> {
+    exact(proposal, ["idempotencyKey", "deviceId", "signingPublicKey", "receivingPublicKey", "approverDeviceId", ...(version === "2" ? ["certificateVersion", "capabilities"] : [])]);
+    if (version === "2") negotiated(proposal as PairingProposalV2);
     identifier(proposal.idempotencyKey); identifier(proposal.deviceId); identifier(proposal.approverDeviceId);
     bytes(proposal.signingPublicKey, 32); bytes(proposal.receivingPublicKey, 32);
     if (proposal.deviceId === proposal.approverDeviceId || proposal.signingPublicKey === proposal.receivingPublicKey) throw new Fault(400, "pairing_identity_invalid");
     return this.authorized(accountId, auth, (a, now, hash) => {
       if (!a.trustRoot) throw new Fault(409, "trust_root_required");
-      if (own(a.devices, proposal.deviceId)) throw new Fault(409, "device_id_exists");
+      if (version === "1" && proposal.approverDeviceId !== a.trustRoot.rootDeviceId) throw new Fault(403, "issuer_proof_capability_required");
       device(a, proposal.approverDeviceId);
       if (!Object.keys(a.environments).some(id => { try { return permission(a, proposal.approverDeviceId, id, now).role === "admin"; } catch { return false; } })) throw new Fault(403, "admin_required");
       const approver = own(a.devices, proposal.approverDeviceId)!;
@@ -119,12 +127,15 @@ export class EnrollmentService {
       if (prior) {
         const c = prior.context;
         if (prior.initiatorSessionHash !== hash || c.initiatorDeviceId !== proposal.deviceId || c.initiatorSigningPublicKey !== proposal.signingPublicKey ||
-          c.initiatorReceivingPublicKey !== proposal.receivingPublicKey || c.approverDeviceId !== proposal.approverDeviceId) throw new Fault(409, "idempotency_conflict");
+          c.initiatorReceivingPublicKey !== proposal.receivingPublicKey || c.approverDeviceId !== proposal.approverDeviceId || (prior.certificateVersion ?? "1") !== version) throw new Fault(409, "idempotency_conflict");
         return pairingView(prior);
       }
+      if (own(a.devices, proposal.deviceId)) throw new Fault(409, "device_id_exists");
+      const allKeys = Object.values(a.devices).flatMap(d => [d.signingPublicKey, d.receivingPublicKey]);
+      if (allKeys.includes(proposal.signingPublicKey) || allKeys.includes(proposal.receivingPublicKey) || [a.recoverySigningPublicKey, a.recoveryReceivingPublicKey].some(k => k === proposal.signingPublicKey || k === proposal.receivingPublicKey)) throw new Fault(400, "pairing_identity_invalid");
       for (const [key, old] of Object.entries(a.pairingSessions)) if (!old.sequence && Number(old.context.expiresAt) <= now) delete a.pairingSessions[key];
       if (Object.keys(a.devices).length >= 64 || Object.keys(a.pairingSessions).length >= 64) throw new Fault(429, "pairing_capacity_reached");
-      const record: PairingRecord = { idempotencyKey: proposal.idempotencyKey, initiatorSessionHash: hash,
+      const record: PairingRecord = { idempotencyKey: proposal.idempotencyKey, initiatorSessionHash: hash, ...(version === "2" ? { certificateVersion: "2" as const } : {}),
         context: { accountId, accountGeneration: a.generation, purpose: "enroll-device", sessionId: crypto.randomUUID(), challengeNonce: randomToken(), expiresAt: String(now + 120),
           initiatorDeviceId: proposal.deviceId, initiatorSigningPublicKey: proposal.signingPublicKey, initiatorReceivingPublicKey: proposal.receivingPublicKey,
           approverDeviceId: proposal.approverDeviceId, approverSigningPublicKey: approver.signingPublicKey, approverReceivingPublicKey: approver.receivingPublicKey },
@@ -133,11 +144,11 @@ export class EnrollmentService {
       return pairingView(record);
     });
   }
-  private async pairing<T>(accountId: string, auth: LoginAuth & { deviceId?: string }, key: string, operation: (a: EnrollmentAccount, r: PairingRecord, side: "initiator" | "approver", now: number) => T): Promise<T> {
+  private async pairing<T>(accountId: string, auth: LoginAuth & { deviceId?: string }, key: string, operation: (a: EnrollmentAccount, r: PairingRecord, side: "initiator" | "approver", now: number) => T, version: "1" | "2" = "1"): Promise<T> {
     identifier(key); if (auth.deviceId) identifier(auth.deviceId);
     return this.authorized(accountId, auth, (a, now, hash) => {
       const r = own(a.pairingSessions, key);
-      if (!r || r.context.accountGeneration !== a.generation) throw new Fault(404, "pairing_not_found");
+      if (!r || (r.certificateVersion ?? "1") !== version || r.context.accountGeneration !== a.generation) throw new Fault(404, "pairing_not_found");
       let side: "initiator" | "approver";
       if (hash === r.initiatorSessionHash) side = "initiator";
       else if (auth.deviceId === r.context.approverDeviceId) { manager(a, auth as Auth, hash, now); side = "approver"; }
@@ -146,10 +157,10 @@ export class EnrollmentService {
       return operation(a, r, side, now);
     });
   }
-  async pairingStatus(accountId: string, auth: LoginAuth & { deviceId?: string }, key: string): Promise<Record<string, unknown>> {
-    return this.pairing(accountId, auth, key, (_, r) => pairingView(r));
+  async pairingStatus(accountId: string, auth: LoginAuth & { deviceId?: string }, key: string, version: "1" | "2" = "1"): Promise<Record<string, unknown>> {
+    return this.pairing(accountId, auth, key, (_, r) => pairingView(r), version);
   }
-  async relay(accountId: string, auth: LoginAuth & { deviceId?: string }, key: string, value: Relay): Promise<Record<string, unknown>> {
+  async relay(accountId: string, auth: LoginAuth & { deviceId?: string }, key: string, value: Relay, version: "1" | "2" = "1"): Promise<Record<string, unknown>> {
     exact(value, ["side", "kind", "payload", "signature"]);
     if (!["initiator", "approver"].includes(value.side) || !["message", "confirmation"].includes(value.kind)) throw new Fault(400, "relay_invalid");
     bytes(value.payload, 32); bytes(value.signature, 64);
@@ -163,12 +174,13 @@ export class EnrollmentService {
       if (value.kind === "message" && value.payload === r.messages[side === "initiator" ? "approver" : "initiator"]) throw new Fault(400, "pairing_reflection");
       target[side] = value.payload;
       return pairingView(r);
-    });
+    }, version);
   }
   async approve(accountId: string, auth: Auth, key: string, value: { grants: SignedGrant[]; transcriptHash: string; signature: string }): Promise<Record<string, unknown>> {
     exact(value, ["grants", "transcriptHash", "signature"]);
     return this.pairing(accountId, auth, key, (a, r, side, now) => {
       if (side !== "approver" || r.sequence) throw new Fault(403, "admin_required");
+      requireV1Root(a, r);
       if (value.transcriptHash !== transcriptHash(r)) throw new Fault(403, "pairing_transcript_mismatch");
       const certificate: EnrollmentCertificate = { context: structuredClone(r.context), pairingProfile, transcriptHash: value.transcriptHash,
         grants: structuredClone(value.grants), approverSignature: value.signature };
@@ -179,7 +191,22 @@ export class EnrollmentService {
       return pairingView(r);
     });
   }
-  async completePairing(accountId: string, auth: LoginAuth, key: string, signature: string): Promise<Record<string, unknown>> {
+  async approveV2(accountId: string, auth: Auth, key: string, value: ApprovalRequestV2): Promise<Record<string, unknown>> {
+    exact(value, ["certificateVersion", "capabilities", "grants", "transcriptHash", "issuerProof", "signature"]); negotiated(value);
+    return this.pairing(accountId, auth, key, (a, r, side, now) => {
+      if (side !== "approver" || r.sequence) throw new Fault(403, "admin_required");
+      if (value.transcriptHash !== transcriptHash(r)) throw new Fault(403, "pairing_transcript_mismatch");
+      const certificate: EnrollmentApprovalV2 = { certificateVersion: "2", context: structuredClone(r.context), pairingProfile,
+        transcriptHash: value.transcriptHash, grants: structuredClone(value.grants), issuerProof: structuredClone(value.issuerProof), approverSignature: value.signature };
+      enrollmentV2Fields(certificate);
+      approvalStillValid(a, r, certificate.grants, now);
+      issuerProofStillCurrent(a, certificate);
+      if (r.approval && (JSON.stringify(enrollmentV2Fields(r.approval as EnrollmentApprovalV2)) !== JSON.stringify(enrollmentV2Fields(certificate)) || r.approval.approverSignature !== certificate.approverSignature)) throw new Fault(409, "approval_already_consumed");
+      r.approval = certificate;
+      return pairingView(r);
+    }, "2");
+  }
+  async completePairing(accountId: string, auth: LoginAuth, key: string, signature: string, version: "1" | "2" = "1"): Promise<Record<string, unknown>> {
     bytes(signature, 64);
     return this.pairing(accountId, auth, key, (a, r, side, now) => {
       if (side !== "initiator" || !r.approval) throw new Fault(403, "approval_required");
@@ -190,9 +217,12 @@ export class EnrollmentService {
         return { ...pairingView(r), replayed: true };
       }
       if (own(a.devices, r.context.initiatorDeviceId)) throw new Fault(409, "device_id_exists");
+      if (r.certificateVersion !== "2") requireV1Root(a, r);
       approvalStillValid(a, r, certificate.grants, now);
-      verify(r.context.approverSigningPublicKey, canonical(enrollmentFields(certificate)), certificate.approverSignature);
-      verify(r.context.initiatorSigningPublicKey, canonical(enrollmentFields(certificate)), signature);
+      if (r.certificateVersion === "2") issuerProofStillCurrent(a, certificate as EnrollmentApprovalV2);
+      const fields = r.certificateVersion === "2" ? enrollmentV2Fields(certificate as EnrollmentApprovalV2) : enrollmentFields(certificate);
+      verify(r.context.approverSigningPublicKey, canonical(fields), certificate.approverSignature);
+      verify(r.context.initiatorSigningPublicKey, canonical(fields), signature);
       certificate.initiatorSignature = signature;
       const c = r.context;
       a.devices[c.initiatorDeviceId] = { id: c.initiatorDeviceId, signingPublicKey: c.initiatorSigningPublicKey, receivingPublicKey: c.initiatorReceivingPublicKey, revoked: false };
@@ -202,7 +232,7 @@ export class EnrollmentService {
       a.grantHistory ??= [];
       for (const g of certificate.grants) a.grantHistory.push({ sequence: r.sequence, grant: structuredClone(g), authorization: structuredClone(a.grants[grantKey(g.grant.environmentId, c.approverDeviceId)]!) });
       return { ...pairingView(r), replayed: false };
-    });
+    }, version);
   }
 }
 export function relayFields(r: PairingRecord, value: Pick<Relay, "side" | "kind" | "payload">): string[] {
@@ -211,5 +241,9 @@ export function relayFields(r: PairingRecord, value: Pick<Relay, "side" | "kind"
 }
 function pairingView(r: PairingRecord): Record<string, unknown> {
   return structuredClone({ state: r.sequence ? "complete" : r.approval ? "approved" : "pending", idempotencyKey: r.idempotencyKey,
-    pairingProfile, context: r.context, messages: r.messages, confirmations: r.confirmations, approval: r.approval ?? null, sequence: r.sequence ?? null });
+    ...(r.certificateVersion === "2" ? { certificateVersion: "2", capabilities: [issuerProofCapability] } : {}), pairingProfile, context: r.context, messages: r.messages, confirmations: r.confirmations, approval: r.approval ?? null, sequence: r.sequence ?? null });
+}
+
+function negotiated(value: { certificateVersion: string; capabilities: string[] }): void {
+  if (value.certificateVersion !== "2" || !Array.isArray(value.capabilities) || value.capabilities.length !== 1 || value.capabilities[0] !== issuerProofCapability) throw new Fault(400, "issuer_proof_capability_required");
 }
