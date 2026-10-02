@@ -38,7 +38,9 @@
 
 路径最多 32 项，Admin 来源与目标分别最多 256 项。v2 批准请求体和规范证明编码各限 262,144 字节；Node 前端、Workers 前端与公共解析器使用同一限制。环境生命周期入口仍限 1 MB，其他入口仍限 100 kB。账号持久文档仍限 1 MB；本切片没有解除历史容量限制，也没有增加 JSON 重复字段专用解析器。
 
-本切片支持首次初始化的同环境、同 keyVersion 根 selfAdmin→A 授 B Admin→B 授 C，以及带已归档 v2 节点继续到 D。新建环境或跨 keyVersion 的来源需要签名 `EnvironmentChange` 扩展证明；目前尚未实现。即使新环境中的 B Admin 已经通过正式业务获得授权，缺少该证明仍返回 `issuer_environment_evidence_required`。这种拒绝不会偷偷将根公钥或恢复元数据提升为账号级管理权。
+该旧 profile 保持限制；新环境及跨版本请明确选择 [来源与 v3](ENROLLMENT-V3.md)，不会默改本页编码。
+
+本切片支持首次初始化的同环境、同 keyVersion 根 selfAdmin→A 授 B Admin→B 授 C，以及带已归档 v2 节点继续到 D。新建环境或跨 keyVersion 的来源需要签名 `EnvironmentChange` 扩展证明；v2 profile 继续拒绝；新 v3 profile 已实现独立来源证书。即使新环境中的 B Admin 已经通过正式业务获得授权，缺少该证明仍返回 `issuer_environment_evidence_required`。这种拒绝不会偷偷将根公钥或恢复元数据提升为账号级管理权。
 
 ## 实测证据与限制
 

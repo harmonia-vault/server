@@ -1,3 +1,5 @@
+import { buildIssuerEvidence, type IssuerOriginProof } from "./issuer-origin.js";
+import { environmentChangeHash, environmentOriginBytes, environmentOriginHash, environmentRights, rightsFields, type SignedEnvironmentOrigin } from "./environment-origin.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { Fault, grantKey, type Account, type Auth, type SignedGrant, type SignedMutation } from "./model.js";
 import { bytes, generation, grantBytes, identifier, mutationBytes, verify } from "./protocol.js";
@@ -12,8 +14,9 @@ export interface EnvironmentChange {
   grants: SignedGrant[]; mutations: SignedMutation[];
 }
 export interface SignedEnvironmentChange { change: EnvironmentChange; signature: string }
+export interface SignedEnvironmentChangeV2 extends SignedEnvironmentChange { origin: SignedEnvironmentOrigin }
 export interface EnvironmentEvent {
-  sequence: number; change: SignedEnvironmentChange; authorization: SignedGrant; subjects: string[];
+  sequence: number; change: SignedEnvironmentChange; authorization: SignedGrant; subjects: string[]; origin?: SignedEnvironmentOrigin;
 }
 export interface RevocationAuthority { environmentId: string; keyVersion: string; grantGeneration: string }
 export interface DeviceRevocation {
@@ -100,6 +103,10 @@ export function deviceRevocationBytes(r: DeviceRevocation): Uint8Array {
     r.subjectSigningPublicKey, r.subjectReceivingPublicKey, r.idempotencyKey, r.challengeId, r.sessionHash, r.nonce, r.expiresAt, revocationAuthorityHash(r.authorities)]);
 }
 const content = (encoded: Uint8Array, signature: string): string => Buffer.from(encoded).toString("base64url") + "." + signature;
+export function environmentSubmissionContent(encoded: Uint8Array, signature: string, origin: SignedEnvironmentOrigin): string {
+  return JSON.stringify(["harmonia/environment-submission/v2", Buffer.from(encoded).toString("base64url"), signature,
+    Buffer.from(environmentOriginBytes(origin.origin)).toString("base64url"), origin.signature]);
+}
 const nowSeconds = (): number => Math.floor(Date.now() / 1000);
 const active = (g: SignedGrant, a: Account, now: number): boolean => g.grant.role !== "none" && g.grant.accountGeneration === a.generation && !a.devices[g.grant.subjectDeviceId]?.revoked && !!a.devices[g.grant.subjectDeviceId] && (g.grant.expiresAt === "0" || BigInt(g.grant.expiresAt) > BigInt(now));
 function own<T>(obj: Record<string, T> | undefined, key: string): T | undefined { return obj && Object.hasOwn(obj, key) ? obj[key] : undefined; }
@@ -123,22 +130,47 @@ export class EnvironmentService {
       return structuredClone({ accountId, accountGeneration: a.generation, sequence: a.sequence, environments });
     });
   }
-  async changeStatus(accountId: string, auth: Auth, idempotencyKey: string): Promise<{ state: "complete" | "unknown"; sequence?: number }> {
+  async control(accountId: string, auth: Auth, environmentId: string): Promise<{ sequence: number; grants: SignedGrant[]; issuerEvidence: IssuerOriginProof }> {
+    identifier(environmentId);
+    return this.authenticated(accountId, auth, (account, now) => {
+      if (permission(account, auth.deviceId, environmentId, now).role !== "admin") throw new Fault(403, "admin_required");
+      const grants = Object.values(account.grants).filter(grant => grant.grant.environmentId === environmentId && active(grant, account, now));
+      const current = account.grants[grantKey(environmentId, auth.deviceId)]!;
+      const issuerEvidence = buildIssuerEvidence(account, auth.deviceId, grants, [current]);
+      if (!issuerEvidence) throw new Fault(403, "issuer_origin_invalid");
+      return structuredClone({ sequence: account.sequence, grants, issuerEvidence });
+    });
+  }
+  async changeStatus(accountId: string, auth: Auth, idempotencyKey: string, version: "1" | "2" = "1"): Promise<{ state: "complete" | "unknown"; sequence?: number; contentHash?: string }> {
     identifier(idempotencyKey);
     return this.authenticated(accountId, auth, a => {
       const found = own(a.idempotency, `environment/${auth.deviceId}/${idempotencyKey}`);
-      return found ? { state: "complete", sequence: found.sequence } : { state: "unknown" };
+      if (!found) return { state: "unknown" };
+      if (version === "2" && !found.content.startsWith('["harmonia/environment-submission/v2",')) throw new Fault(409, "idempotency_conflict");
+      return { state: "complete", sequence: found.sequence, ...(version === "2" ? { contentHash: Buffer.from(sha256(new TextEncoder().encode(found.content))).toString("hex") } : {}) };
     });
   }
   async change(accountId: string, auth: Auth, signed: SignedEnvironmentChange): Promise<{ sequence: number; replayed: boolean }> {
-    exact(signed, ["change", "signature"]); const encoded = environmentChangeBytes(signed.change); bytes(signed.signature, 64);
+    exact(signed, ["change", "signature"]);
+    return this.applyChange(accountId, auth, signed);
+  }
+  async changeV2(accountId: string, auth: Auth, signed: SignedEnvironmentChangeV2): Promise<{ sequence: number; replayed: boolean }> {
+    exact(signed, ["change", "signature", "origin"]);
+    exact(signed.origin, ["origin", "signature"]);
+    environmentOriginBytes(signed.origin.origin); bytes(signed.origin.signature, 64);
+    return this.applyChange(accountId, auth, { change: signed.change, signature: signed.signature }, signed.origin);
+  }
+  private async applyChange(accountId: string, auth: Auth, signed: SignedEnvironmentChange, origin?: SignedEnvironmentOrigin): Promise<{ sequence: number; replayed: boolean }> {
+    const encoded = environmentChangeBytes(signed.change); bytes(signed.signature, 64);
     return this.authenticated(accountId, auth, (a, now) => {
       const c = signed.change;
       if (c.accountId !== a.id || c.accountGeneration !== a.generation || c.deviceId !== auth.deviceId) throw new Fault(403, "binding_invalid");
       verify(a.devices[auth.deviceId]!.signingPublicKey, encoded, signed.signature);
-      const key = `environment/${auth.deviceId}/${c.idempotencyKey}`, wire = content(encoded, signed.signature), old = own(a.idempotency, key);
+      const key = `environment/${auth.deviceId}/${c.idempotencyKey}`, wire = origin ? environmentSubmissionContent(encoded, signed.signature, origin) : content(encoded, signed.signature), old = own(a.idempotency, key);
       const authority = permission(a, auth.deviceId, c.authorityEnvironmentId, now);
       if (authority.role !== "admin") throw new Fault(403, "admin_required");
+      // 新来源提交也必须能追溯到原双签初始化；旧接口行为保持原样。
+      if (origin) buildIssuerEvidence(a, auth.deviceId, [a.grants[grantKey(c.authorityEnvironmentId, auth.deviceId)]!]);
       if (old) { if (old.content !== wire) throw new Fault(409, "idempotency_conflict"); return { sequence: old.sequence, replayed: true }; }
       if (authority.keyVersion !== c.authorityKeyVersion || authority.grantGeneration !== c.authorityGrantGeneration) throw new Fault(403, "grant_stale");
       if (c.expectedSequence !== String(a.sequence)) throw new Fault(409, "environment_snapshot_stale");
@@ -159,11 +191,12 @@ export class EnvironmentService {
       const authorization = structuredClone(a.grants[grantKey(c.authorityEnvironmentId, auth.deviceId)]!);
       const subjects = Object.values(a.grants).filter(g => g.grant.environmentId === c.environmentId).map(g => g.grant.subjectDeviceId).sort();
       if (c.operation === "create" || c.operation === "rotate") this.validateManifest(a, now, c, authority.expiresAt);
+      if (origin) this.validateOrigin(a, now, signed, encoded, authorization, origin);
       if (c.operation === "rotate" && !!own(a.environmentLabels, c.environmentId) !== !!c.labelPayload) throw new Fault(409, "label_reencryption_required");
       if ((a.environmentHistory?.length ?? 0) >= 10000 || a.events.length + c.mutations.length > 10000) throw new Fault(503, "account_capacity_reached");
       const sequence = next(a);
       a.environmentHistory ??= []; a.environmentLabels ??= {}; a.deletedEnvironmentIds ??= {}; a.grantHistory ??= [];
-      a.environmentHistory.push({ sequence, change: structuredClone(signed), authorization, subjects: c.operation === "create" ? [auth.deviceId] : subjects });
+      a.environmentHistory.push({ sequence, change: { change: structuredClone(signed.change), signature: signed.signature }, authorization, subjects: c.operation === "create" ? [auth.deviceId] : subjects, ...(origin ? { origin: structuredClone(origin) } : {}) });
       if (c.operation === "delete") {
         delete a.environments[c.environmentId]; delete a.environmentLabels[c.environmentId];
         a.deletedEnvironmentIds[c.environmentId] = key;
@@ -175,7 +208,7 @@ export class EnvironmentService {
           a.environments[c.environmentId] = { id: c.environmentId, keyVersion: c.keyVersion, recoveryEnvelope: c.recoveryEnvelope, recoveryGeneration: a.recoveryGeneration, recoveryKeyVersion: c.keyVersion };
           for (const g of c.grants) {
             a.grants[grantKey(c.environmentId, g.grant.subjectDeviceId)] = structuredClone(g);
-            a.grantHistory.push({ sequence, grant: structuredClone(g), authorization });
+            a.grantHistory.push({ sequence, grant: structuredClone(g), authorization, ...(origin ? { originHash: environmentOriginHash(origin) } : {}) });
             a.idempotency[`grant/${g.grant.issuerDeviceId}/${g.grant.idempotencyKey}`] = { content: content(grantBytes(g.grant), g.signature), sequence };
           }
           const writer = c.grants.find(g => g.grant.subjectDeviceId === auth.deviceId)!;
@@ -190,6 +223,22 @@ export class EnvironmentService {
       a.idempotency[key] = { content: wire, sequence: a.sequence };
       return { sequence: a.sequence, replayed: false };
     });
+  }
+  private validateOrigin(a: EnvironmentAccount, now: number, signed: SignedEnvironmentChange, encoded: Uint8Array, authority: SignedGrant, signedOrigin: SignedEnvironmentOrigin): void {
+    const c = signed.change, o = signedOrigin.origin;
+    if (c.operation !== "create" && c.operation !== "rotate") throw new Fault(400, "environment_origin_operation_invalid");
+    const pairs = [[o.accountId, c.accountId], [o.accountGeneration, c.accountGeneration], [o.actorDeviceId, c.deviceId],
+      [o.environmentId, c.environmentId], [o.operation, c.operation], [o.authorityEnvironmentId, c.authorityEnvironmentId],
+      [o.authorityKeyVersion, c.authorityKeyVersion], [o.authorityGrantGeneration, c.authorityGrantGeneration],
+      [o.previousKeyVersion, c.previousKeyVersion], [o.keyVersion, c.keyVersion], [o.expectedSequence, c.expectedSequence],
+      [o.idempotencyKey, c.idempotencyKey]];
+    if (pairs.some(([first, second]) => first !== second) || o.changeHash !== environmentChangeHash(encoded, signed.signature) || o.authorityHash !== environmentRights(authority).grantHash) throw new Fault(403, "environment_origin_binding_invalid");
+    verify(a.devices[c.deviceId]!.signingPublicKey, environmentOriginBytes(o), signedOrigin.signature);
+    const sort = (rows: ReturnType<typeof environmentRights>[]) => rows.sort((first, second) => first.subjectDeviceId < second.subjectDeviceId ? -1 : first.subjectDeviceId > second.subjectDeviceId ? 1 : 0);
+    const before = c.operation === "create" ? [] : sort(Object.values(a.grants).filter(g => g.grant.environmentId === c.environmentId && active(g, a, now)).map(environmentRights));
+    const after = sort(c.grants.map(environmentRights));
+    if (JSON.stringify(rightsFields(o.before)) !== JSON.stringify(rightsFields(before)) || JSON.stringify(rightsFields(o.after)) !== JSON.stringify(rightsFields(after))) throw new Fault(403, "environment_origin_snapshot_invalid");
+    if (c.operation === "rotate" && !o.before.some(row => row.subjectDeviceId === c.deviceId && row.role === "admin" && row.grantHash === o.authorityHash)) throw new Fault(403, "environment_origin_actor_invalid");
   }
   private validateManifest(a: EnvironmentAccount, now: number, c: EnvironmentChange, issuerExpiry: string): void {
     const old = Object.values(a.grants).filter(g => g.grant.environmentId === c.environmentId && active(g, a, now));

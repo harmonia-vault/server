@@ -32,7 +32,9 @@ export async function lifecycleRoute(request: Request, store: Store): Promise<{ 
     const b = await body(request); exact(b, ["accountGeneration", "challengeId", "signature"]);
     result = await service.recoverySession(accountId, text(b.accountGeneration), text(b.challengeId), text(b.signature));
   } else if (request.method === "GET" && !operationId && op === "recovery-vault") {
-    result = await service.recoveryVault(accountId, auth(request));
+    const capability = url.searchParams.get("capability");
+    if (capability !== null && (url.searchParams.getAll("capability").length !== 1 || [...url.searchParams.keys()].some(key => key !== "capability"))) throw new Fault(400, "issuer_origin_capability_required");
+    result = await service.recoveryVault(accountId, auth(request), capability ?? undefined);
   } else if (request.method === "POST" && !operationId && op === "recovery-rotations") {
     const b = await body(request); result = await service.beginRotation(accountId, auth(request), b as unknown as RotationProposal);
   } else if (request.method === "GET" && operationId && !completion && op === "recovery-rotations") {

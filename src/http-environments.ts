@@ -1,6 +1,6 @@
 import { Fault, type Auth } from "./model.js";
 import { body } from "./http.js";
-import { EnvironmentService, type SignedEnvironmentChange, type SignedDeviceRevocation } from "./environments.js";
+import { EnvironmentService, type SignedEnvironmentChange, type SignedEnvironmentChangeV2, type SignedDeviceRevocation } from "./environments.js";
 import type { Store } from "./store.js";
 function auth(request: Request): Auth {
   const token = request.headers.get("authorization")?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
@@ -9,13 +9,22 @@ function auth(request: Request): Auth {
   return { token, deviceId, accountGeneration };
 }
 export async function environmentRoute(request: Request, store: Store): Promise<{ handled: boolean; result?: unknown }> {
-  const m = new URL(request.url).pathname.match(/^\/v1\/accounts\/([A-Za-z0-9._:-]+)\/(environments|environment-changes|device-revocations)(?:\/([A-Za-z0-9._:-]+))?$/);
+  const url = new URL(request.url);
+  const m = url.pathname.match(/^\/v1\/accounts\/([A-Za-z0-9._:-]+)\/(environments|issuer-evidence|environment-changes|environment-changes-v2|device-revocations)(?:\/([A-Za-z0-9._:-]+))?$/);
   if (!m) return { handled: false };
+  if (m[2] === "environment-changes-v2" && url.search) throw new Fault(400, "query_forbidden");
   const service = new EnvironmentService(store), accountId = m[1]!, op = m[2]!, key = m[3], credentials = auth(request);
   let result: unknown;
+  if (op === "issuer-evidence") {
+    const environmentId = url.searchParams.get("environmentId");
+    if (request.method !== "GET" || key) throw new Fault(405, "method_not_allowed");
+    if (!environmentId || url.searchParams.getAll("environmentId").length !== 1 || url.searchParams.getAll("capability").length !== 1 || url.searchParams.get("capability") !== "issuer-origin-v1" || [...url.searchParams.keys()].some(name => name !== "environmentId" && name !== "capability")) throw new Fault(400, "issuer_origin_capability_required");
+    return { handled: true, result: await service.control(accountId, credentials, environmentId) };
+  }
   if (request.method === "GET" && op === "environments" && !key) result = await service.list(accountId, credentials);
   else if (request.method === "POST" && op === "environment-changes" && !key) result = await service.change(accountId, credentials, await body(request, 1_000_000) as unknown as SignedEnvironmentChange);
-  else if (request.method === "GET" && op === "environment-changes" && key) result = await service.changeStatus(accountId, credentials, key);
+  else if (request.method === "POST" && op === "environment-changes-v2" && !key) result = await service.changeV2(accountId, credentials, await body(request, 1_000_000) as unknown as SignedEnvironmentChangeV2);
+  else if (request.method === "GET" && (op === "environment-changes" || op === "environment-changes-v2") && key) result = await service.changeStatus(accountId, credentials, key, op === "environment-changes-v2" ? "2" : "1");
   else if (request.method === "GET" && op === "device-revocations" && key) result = await service.revocationStatus(accountId, credentials, key);
   else if (request.method === "POST" && op === "device-revocations" && !key) {
     const b = await body(request);

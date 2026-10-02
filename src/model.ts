@@ -14,7 +14,7 @@ export interface SignedMutation { mutation: Mutation; signature: string }
 export interface SignedGrant { grant: Grant; signature: string }
 export interface Device { id: string; signingPublicKey: string; receivingPublicKey: string; revoked: boolean }
 export interface Environment { id: string; keyVersion: string; recoveryEnvelope: string; recoveryGeneration?: string; recoveryKeyVersion?: string }
-export interface GrantEvent { sequence: number; grant: SignedGrant; authorization: SignedGrant | null }
+export interface GrantEvent { sequence: number; grant: SignedGrant; authorization: SignedGrant | null; originHash?: string }
 export interface Event { sequence: number; mutation: SignedMutation; authorization: SignedGrant }
 export interface Session { tokenHash: string; generation: string; expiresAt: number; kind: "login" | "recovery"; deviceId?: string; recoveryGeneration?: string; rotationRequired?: boolean; id?: string }
 export interface DeviceChallenge { id: string; deviceId: string; sessionHash: string; nonce: string; expiresAt: number; generation: string }
@@ -42,6 +42,7 @@ export interface Pull {
   accountId: string; accountGeneration: string; sequence: number;
   grants: SignedGrant[]; events: Event[]; scope?: "authorizations";
   environmentEvents?: import("./environments.js").EnvironmentEvent[];
+  issuerEvidence?: import("./issuer-origin.js").IssuerOriginProof | null;
 }
 export class Fault extends Error {
   constructor(public readonly status: number, public readonly code: string) { super(code); }

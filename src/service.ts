@@ -1,3 +1,4 @@
+import { buildIssuerEvidence, issuerOriginCapability } from "./issuer-origin.js";
 import { AccountLifecycle } from "./account-lifecycle.js";
 import type { EmailTransport } from "./email-transport.js";
 import type { Account, Auth, Grant, Pull, SignedGrant, SignedMutation } from "./model.js";
@@ -166,7 +167,8 @@ export class VaultService {
     if (!receipt) return { idempotencyKey, accepted: false };
     return { idempotencyKey, accepted: true, sequence: receipt.sequence, contentHash: await tokenHash(receipt.content) };
   }
-  async pull(accountId: string, auth: Auth, after: number, scope?: "authorizations"): Promise<Pull> {
+  async pull(accountId: string, auth: Auth, after: number, scope?: "authorizations", capability?: string): Promise<Pull> {
+    if (capability !== undefined && capability !== issuerOriginCapability) throw new Fault(400, "issuer_origin_capability_required");
     if (scope !== undefined && scope !== "authorizations") throw new Fault(400, "scope_invalid");
     if (!Number.isSafeInteger(after) || after < 0) throw new Fault(400, "checkpoint_invalid");
     return this.authenticated(accountId, auth, (account, now) => {
@@ -180,10 +182,20 @@ export class VaultService {
         grants.push(signed);
         try { permission(account, auth.deviceId, g.environmentId, now); readable.add(g.environmentId); } catch { /* revoked/expired grants carry no ciphertext */ }
       }
+      const readableGrants = grants.filter(signed => readable.has(signed.grant.environmentId));
+      const events = scope === "authorizations" ? [] : account.events.filter(e => e.sequence > after && readable.has(e.mutation.mutation.environmentId) && e.mutation.mutation.keyVersion === account.environments[e.mutation.mutation.environmentId]?.keyVersion);
+      const environmentEvents = (account.environmentHistory ?? []).filter(e => e.sequence > after && e.subjects.includes(auth.deviceId) && (e.change.change.operation === "delete" || readable.has(e.change.change.environmentId))).map(event => {
+        if (capability || !event.origin) return event;
+        const { origin: _origin, ...legacyEvent } = event;
+        return legacyEvent;
+      });
+      // 返回数据的历史写入者可能不在本设备当前授权路径中；候选闭包还须包含
+      // 这些精确冻结的签名授权及双签身份。暂停流没有普通数据事件。
+      const sources = [...readableGrants, ...events.map(event => event.authorization), ...environmentEvents.map(event => event.authorization)];
       return structuredClone({ accountId, accountGeneration: account.generation, sequence: account.sequence, grants,
         ...(scope ? { scope } : {}),
-        environmentEvents: (account.environmentHistory ?? []).filter(e => e.sequence > after && e.subjects.includes(auth.deviceId) && (e.change.change.operation === "delete" || readable.has(e.change.change.environmentId))),
-        events: scope === "authorizations" ? [] : account.events.filter(e => e.sequence > after && readable.has(e.mutation.mutation.environmentId) && e.mutation.mutation.keyVersion === account.environments[e.mutation.mutation.environmentId]?.keyVersion) });
+        ...(capability ? { issuerEvidence: readableGrants.length ? buildIssuerEvidence(account, auth.deviceId, sources, readableGrants) : null } : {}),
+        environmentEvents, events });
     });
   }
 }

@@ -10,10 +10,14 @@
 | --- | --- |
 | `GET /environments` | 列出本设备当前可读环境、密文名称、版本和当前签名授权 |
 | `POST /environment-changes` | 提交管理设备签名的创建、改名、删除或钥匙轮换操作 |
+| `POST /environment-changes-v2` | 提交创建/轮换内层签名与独立控制来源签名，供 v3 权限图验证 |
+| `GET /issuer-evidence?environmentId=E&capability=issuer-origin-v1` | 当前该环境 Admin 获取完整接收者控制闭包，不含变量/标签/恢复封套 |
 | `GET /environment-changes/:idempotencyKey` | 仅查询本设备发起操作的完成状态与序号，不暴露其他设备收据 |
 | `POST /device-revocations` | 全环境 Admin 获取一次设备撤销挑战，请求包含目标设备和幂等键 |
 | `GET /device-revocations/:idempotencyKey` | 查询本设备发起撤销的待完成/完成状态；结果不明时可先查询 |
 | `POST /device-revocations/complete` | 提交完整挑战和设备签名，原子撤销目标设备 |
+
+独立来源与固定双签收据合同见 [来源与 v3](ENROLLMENT-V3.md)。旧接口字段严格不变；新创建与轮换的多管理客户端须选择 v2 环境提交。
 
 成功写入后客户端仍须使用与普通同步相同的持久序号拉取路径更新本地权威状态，不能凭 HTTP 成功在本地乐观修改。断网导致结果不明时先查询自己的操作收据。删除本次所据的管理环境后，原始 POST 的当前权限重查可能拒绝；完成收据仍可查询，不会将重试作为新写。
 

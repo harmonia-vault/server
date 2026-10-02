@@ -6,8 +6,9 @@ import { enrollmentRoute } from "./http-enrollment.js";
 import { NotificationAuthority } from "./notifications.js";
 import { environmentRoute } from "./http-environments.js";
 export function bodyLimit(method: string, pathname: string): number {
+  if (method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/pairings-v3\/[A-Za-z0-9._:-]+\/approve$/.test(pathname)) return 1_000_000;
   if (method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/pairings-v2\/[A-Za-z0-9._:-]+\/approve$/.test(pathname)) return 262144;
-  return method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/environment-changes$/.test(pathname) ? 1_000_000 : 100_000;
+  return method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/environment-changes(?:-v2)?$/.test(pathname) ? 1_000_000 : 100_000;
 }
 export async function body(request: Request, maxBody = 100_000): Promise<Record<string, unknown>> {
   if (!Number.isSafeInteger(maxBody) || maxBody <= 0 || maxBody > 1_000_000) throw new Fault(500, "body_limit_invalid");
@@ -69,9 +70,11 @@ export async function route(request: Request, service: VaultService): Promise<Re
       } else if (request.method === "GET" && operation === "pull") {
         const after = url.searchParams.get("after");
         if (after === null || !/^(0|[1-9][0-9]*)$/.test(after)) throw new Fault(400, "checkpoint_invalid");
+        const capability = url.searchParams.get("capability");
+        if (capability !== null && url.searchParams.getAll("capability").length !== 1) throw new Fault(400, "issuer_origin_capability_required");
         const scope = url.searchParams.get("scope");
         if (scope !== null && (scope !== "authorizations" || url.searchParams.getAll("scope").length !== 1)) throw new Fault(400, "scope_invalid");
-        result = await service.pull(accountId, credentials, Number(after), scope ?? undefined);
+        result = await service.pull(accountId, credentials, Number(after), scope ?? undefined, capability ?? undefined);
       } else if (request.method === "POST" && operation === "mutations") {
         const b = await body(request); objectMember(b.mutation);
         if (Object.keys(b).sort().join("|") !== "mutation|signature") throw new Fault(400, "fields_invalid");
