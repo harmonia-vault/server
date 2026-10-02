@@ -1,12 +1,16 @@
 import { Fault, type Auth, type SignedGrant, type SignedMutation } from "./model.js";
 import type { VaultService } from "./service.js";
-const MAX_BODY = 100_000;
-async function body(request: Request): Promise<Record<string, unknown>> {
+import { accountRoute } from "./http-account.js";
+import { lifecycleRoute } from "./http-lifecycle.js";
+import { enrollmentRoute } from "./http-enrollment.js";
+import { environmentRoute } from "./http-environments.js";
+export async function body(request: Request, maxBody = 100_000): Promise<Record<string, unknown>> {
+  if (!Number.isSafeInteger(maxBody) || maxBody <= 0 || maxBody > 1_000_000) throw new Fault(500, "body_limit_invalid");
   if (!request.headers.get("content-type")?.startsWith("application/json")) throw new Fault(415, "json_required");
   const reader = request.body?.getReader(); if (!reader) throw new Fault(400, "body_required");
   const chunks: Uint8Array[] = []; let size = 0;
   try { while (true) { const part = await reader.read(); if (part.done) break; size += part.value.length;
-    if (size > MAX_BODY) { await reader.cancel(); throw new Fault(413, "body_too_large"); } chunks.push(part.value); } }
+    if (size > maxBody) { await reader.cancel(); throw new Fault(413, "body_too_large"); } chunks.push(part.value); } }
   finally { reader.releaseLock(); }
   try {
     const result: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -33,6 +37,14 @@ export async function route(request: Request, service: VaultService): Promise<Re
       if (typeof b.email !== "string" || typeof b.credential !== "string") throw new Fault(400, "login_input_invalid");
       result = url.pathname.endsWith("register") ? await service.register(b.email, b.credential) : await service.login(b.email, b.credential);
     } else {
+      const account = await accountRoute(request, service.accountLifecycle());
+      if (account.handled) return Response.json(account.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+      const enrollment = await enrollmentRoute(request, service);
+      if (enrollment.handled) return Response.json(enrollment.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+      const environment = await environmentRoute(request, service.store);
+      if (environment.handled) return Response.json(environment.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+      const lifecycle = await lifecycleRoute(request, service.store);
+      if (lifecycle.handled) return Response.json(lifecycle.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
       const match = url.pathname.match(/^\/v1\/accounts\/([A-Za-z0-9._:-]+)\/(pull|mutations|grants|device-challenges|device-sessions)$/);
       if (!match) throw new Fault(404, "not_found");
       const accountId = match[1]!; const operation = match[2]!; const credentials = auth(request);
@@ -45,7 +57,9 @@ export async function route(request: Request, service: VaultService): Promise<Re
       } else if (request.method === "GET" && operation === "pull") {
         const after = url.searchParams.get("after");
         if (after === null || !/^(0|[1-9][0-9]*)$/.test(after)) throw new Fault(400, "checkpoint_invalid");
-        result = await service.pull(accountId, credentials, Number(after));
+        const scope = url.searchParams.get("scope");
+        if (scope !== null && (scope !== "authorizations" || url.searchParams.getAll("scope").length !== 1)) throw new Fault(400, "scope_invalid");
+        result = await service.pull(accountId, credentials, Number(after), scope ?? undefined);
       } else if (request.method === "POST" && operation === "mutations") {
         const b = await body(request); objectMember(b.mutation);
         if (Object.keys(b).sort().join("|") !== "mutation|signature") throw new Fault(400, "fields_invalid");

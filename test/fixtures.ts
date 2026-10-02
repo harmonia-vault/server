@@ -1,3 +1,5 @@
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { hashCredential, credential } from "../src/password.js";
 import { grantBytes, mutationBytes } from "../src/protocol.js";
@@ -32,14 +34,15 @@ export const auth = (deviceId = "writer"): Auth => ({ token: tokenFor(deviceId),
 export async function fixtureAccount(id = "synthetic-account", mail = email): Promise<Account> {
   const passwordVerifier = await hashCredential(clientCredential);
   const a: Account = { schema: 1, id, email: mail, generation: "1", verified: true, passwordVerifier, sequence: 0,
-    devices: {}, environments: { dev: { id: "dev", keyVersion: "1", recoveryEnvelope: Buffer.alloc(80, 9).toString("base64url") } }, grants: {},
-    sessions: [], deviceChallenges: [], events: [], idempotency: {},
-    recoveryGeneration: "1", recoverySigningPublicKey: null };
+    devices: {}, environments: { dev: { id: "dev", keyVersion: "1", recoveryEnvelope: Buffer.alloc(80, 9).toString("base64url"), recoveryGeneration: "1", recoveryKeyVersion: "1" } }, grants: {},
+    sessions: [], deviceChallenges: [], events: [], idempotency: {}, grantHistory: [],
+    recoveryGeneration: "1", recoverySigningPublicKey: recoveryKeys(recoverySeed, id).signingPublicKey, recoveryReceivingPublicKey: recoveryKeys(recoverySeed, id).receivingPublicKey };
   for (const deviceId of Object.keys(seeds)) {
     a.sessions.push({ tokenHash: await tokenHash(tokenFor(deviceId)), generation: "1", expiresAt: now + 7200, kind: "login", deviceId });
     a.devices[deviceId] = { id: deviceId, signingPublicKey: publicKey(deviceId), receivingPublicKey: Buffer.from(x25519.getPublicKey(Buffer.alloc(32, 8))).toString("base64url"), revoked: false };
     if (deviceId !== "stranger") {
       const g = grant(deviceId, { accountId: id }); a.grants[grantKey("dev", deviceId)] = signGrant(g);
+      a.grantHistory!.push({ sequence: 0, grant: signGrant(g), authorization: deviceId === "admin" ? null : signGrant(grant("admin", { accountId: id })) });
     }
   }
   return a;
@@ -47,4 +50,11 @@ export async function fixtureAccount(id = "synthetic-account", mail = email): Pr
 export async function seed(store: Store): Promise<VaultService> {
   store.create(await fixtureAccount());
   return new VaultService(store, { allowRegistration: false, requireEmailVerification: true }, () => now);
+}
+
+export const recoverySeed = new Uint8Array(32).fill(5);
+export function recoveryKeys(seed: Uint8Array, id = "synthetic-account", recGen = "1") {
+  const derive = (purpose: string) => hkdf(sha256, seed, undefined, new TextEncoder().encode(JSON.stringify(["harmonia/recovery-kdf/v1", purpose, id, "1", recGen])), 32);
+  const signingSeed = derive("ed25519-signing"), receivingPrivate = derive("x25519-receiving");
+  return { signingSeed, signingPublicKey: Buffer.from(ed25519.getPublicKey(signingSeed)).toString("base64url"), receivingPrivate, receivingPublicKey: Buffer.from(x25519.getPublicKey(receivingPrivate)).toString("base64url") };
 }

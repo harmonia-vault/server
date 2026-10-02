@@ -1,3 +1,5 @@
+import { AccountLifecycle } from "./account-lifecycle.js";
+import type { EmailTransport } from "./email-transport.js";
 import type { Account, Auth, Grant, Pull, SignedGrant, SignedMutation } from "./model.js";
 import { Fault, grantKey } from "./model.js";
 import { bytes, generation, grantBytes, identifier, mutationBytes, verify } from "./protocol.js";
@@ -10,24 +12,24 @@ export function normalizeEmail(email: string): string {
   if (typeof email !== "string" || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Fault(400, "email_invalid");
   return email.toLowerCase();
 }
-function randomToken(): string { return Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url"); }
+export function randomToken(): string { return Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url"); }
 // SHA256 here only hashes random session tokens. Password derivation is performed by the client.
 export async function tokenHash(token: string): Promise<string> {
   return Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))).toString("hex");
 }
-function sameAccount(account: Account, generationValue: string): void {
+export function sameAccount(account: Account, generationValue: string): void {
   if (account.generation !== generationValue) throw new Fault(401, "generation_stale");
 }
-function session(account: Account, hash: string, now: number, restricted = false): import("./model.js").Session {
+export function session(account: Account, hash: string, now: number, restricted = false): import("./model.js").Session {
   const found = account.sessions.find(s => s.tokenHash === hash && s.generation === account.generation && s.expiresAt > now);
   if (!found || (!restricted && found.kind !== "login")) throw new Fault(401, "unauthorized");
   return found;
 }
-function device(account: Account, deviceId: string): void {
+export function device(account: Account, deviceId: string): void {
   const current = account.devices[deviceId];
   if (!current || current.revoked) throw new Fault(403, "device_untrusted");
 }
-function permission(account: Account, deviceId: string, environmentId: string, now: number): Grant {
+export function permission(account: Account, deviceId: string, environmentId: string, now: number): Grant {
   device(account, deviceId);
   const grant = account.grants[grantKey(environmentId, deviceId)]?.grant;
   if (!grant || grant.accountGeneration !== account.generation || grant.role === "none" ||
@@ -36,7 +38,7 @@ function permission(account: Account, deviceId: string, environmentId: string, n
   if (!env || env.keyVersion !== grant.keyVersion) throw new Fault(403, "key_version_stale");
   return grant;
 }
-function next(account: Account): number {
+export function next(account: Account): number {
   if (account.sequence >= Number.MAX_SAFE_INTEGER) throw new Fault(503, "sequence_exhausted");
   return ++account.sequence;
 }
@@ -47,18 +49,10 @@ function idempotent(account: Account, key: string, content: string): { sequence:
   return { sequence: old.sequence, replayed: true };
 }
 export class VaultService {
-  constructor(readonly store: Store, readonly policy: Policy, private readonly clock: () => number = unix, private readonly passwords: PasswordHasher = wasmPassword) {}
-  async register(email: string, clientCredential: string): Promise<{ accountId: string; accountGeneration: string }> {
-    if (!this.policy.allowRegistration) throw new Fault(403, "registration_disabled");
-    // Email proof is not implemented: verification-required registration must not create usable accounts.
-    if (this.policy.requireEmailVerification) throw new Fault(503, "email_verification_unavailable");
-    const canonical = normalizeEmail(email);
-    const passwordVerifier = await this.passwords.hash(clientCredential);
-    const account: Account = { schema: 1, id: crypto.randomUUID(), email: canonical, generation: "1", verified: false,
-      passwordVerifier, sequence: 0, devices: {}, environments: {}, grants: {}, sessions: [], deviceChallenges: [], events: [],
-      idempotency: {}, recoveryGeneration: "1", recoverySigningPublicKey: null };
-    this.store.create(account);
-    return { accountId: account.id, accountGeneration: account.generation };
+  constructor(readonly store: Store, readonly policy: Policy, private readonly clock: () => number = unix, private readonly passwords: PasswordHasher = wasmPassword, readonly mail?: EmailTransport) {}
+  accountLifecycle(): AccountLifecycle { return new AccountLifecycle(this.store, this.passwords, this.clock, this.mail); }
+  async register(email: string, clientCredential: string, reservedAccountId?: string): Promise<{ accountId: string; accountGeneration: string; verificationRequired: boolean }> {
+    return this.accountLifecycle().register(email, clientCredential, this.policy, reservedAccountId);
   }
   async login(email: string, clientCredential: string): Promise<{ accountId: string; accountGeneration: string; token: string; expiresAt: number }> {
     const accountId = this.store.byEmail(normalizeEmail(email));
@@ -159,12 +153,15 @@ export class VaultService {
       const current = account.grants[grantKey(g.environmentId, g.subjectDeviceId)]?.grant.grantGeneration ?? "0";
       if (BigInt(g.grantGeneration) !== BigInt(current) + 1n) throw new Fault(409, "grant_generation_conflict");
       const sequence = next(account);
+      account.grantHistory ??= [];
+      account.grantHistory.push({ sequence, grant: structuredClone(signed), authorization: structuredClone(account.grants[grantKey(g.environmentId, g.issuerDeviceId)]!) });
       account.grants[grantKey(g.environmentId, g.subjectDeviceId)] = structuredClone(signed);
       account.idempotency[key] = { content, sequence };
       return { sequence, replayed: false };
     });
   }
-  async pull(accountId: string, auth: Auth, after: number): Promise<Pull> {
+  async pull(accountId: string, auth: Auth, after: number, scope?: "authorizations"): Promise<Pull> {
+    if (scope !== undefined && scope !== "authorizations") throw new Fault(400, "scope_invalid");
     if (!Number.isSafeInteger(after) || after < 0) throw new Fault(400, "checkpoint_invalid");
     return this.authenticated(accountId, auth, (account, now) => {
       if (after > account.sequence) throw new Fault(409, "checkpoint_ahead");
@@ -178,7 +175,9 @@ export class VaultService {
         try { permission(account, auth.deviceId, g.environmentId, now); readable.add(g.environmentId); } catch { /* revoked/expired grants carry no ciphertext */ }
       }
       return structuredClone({ accountId, accountGeneration: account.generation, sequence: account.sequence, grants,
-        events: account.events.filter(e => e.sequence > after && readable.has(e.mutation.mutation.environmentId) && e.mutation.mutation.keyVersion === account.environments[e.mutation.mutation.environmentId]?.keyVersion) });
+        ...(scope ? { scope } : {}),
+        environmentEvents: (account.environmentHistory ?? []).filter(e => e.sequence > after && e.subjects.includes(auth.deviceId) && (e.change.change.operation === "delete" || readable.has(e.change.change.environmentId))),
+        events: scope === "authorizations" ? [] : account.events.filter(e => e.sequence > after && readable.has(e.mutation.mutation.environmentId) && e.mutation.mutation.keyVersion === account.environments[e.mutation.mutation.environmentId]?.keyVersion) });
     });
   }
 }

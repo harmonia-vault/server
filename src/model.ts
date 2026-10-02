@@ -13,21 +13,34 @@ export interface Grant {
 export interface SignedMutation { mutation: Mutation; signature: string }
 export interface SignedGrant { grant: Grant; signature: string }
 export interface Device { id: string; signingPublicKey: string; receivingPublicKey: string; revoked: boolean }
-export interface Environment { id: string; keyVersion: string; recoveryEnvelope: string }
+export interface Environment { id: string; keyVersion: string; recoveryEnvelope: string; recoveryGeneration?: string; recoveryKeyVersion?: string }
+export interface GrantEvent { sequence: number; grant: SignedGrant; authorization: SignedGrant | null }
 export interface Event { sequence: number; mutation: SignedMutation; authorization: SignedGrant }
-export interface Session { tokenHash: string; generation: string; expiresAt: number; kind: "login" | "recovery"; deviceId?: string }
+export interface Session { tokenHash: string; generation: string; expiresAt: number; kind: "login" | "recovery"; deviceId?: string; recoveryGeneration?: string; rotationRequired?: boolean; id?: string }
 export interface DeviceChallenge { id: string; deviceId: string; sessionHash: string; nonce: string; expiresAt: number; generation: string }
 export interface Account {
   schema: 1; id: string; email: string; generation: string; verified: boolean; passwordVerifier: string;
   sequence: number; devices: Record<string, Device>; environments: Record<string, Environment>;
   grants: Record<string, SignedGrant>; sessions: Session[]; deviceChallenges: DeviceChallenge[]; events: Event[];
   idempotency: Record<string, { content: string; sequence: number }>;
-  recoveryGeneration: string; recoverySigningPublicKey: string | null;
+  recoveryGeneration: string; recoverySigningPublicKey: string | null; recoveryReceivingPublicKey?: string | null;
+  emailProofs?: import("./account-lifecycle.js").EmailProof[];
+  resetReceipt?: import("./account-lifecycle.js").ResetReceipt;
+  trustRoot?: import("./trust-root.js").TrustRoot;
+  grantHistory?: GrantEvent[];
+  environmentHistory?: import("./environments.js").EnvironmentEvent[];
+  deletedEnvironmentIds?: Record<string, string>;
+  environmentLabels?: Record<string, string>;
+  deviceRevocations?: Record<string, import("./environments.js").RevocationRecord>;
+  bootChallenges?: import("./lifecycle-wire.js").BootChallenge[];
+  recoveryChallenges?: import("./lifecycle-wire.js").RecoveryChallenge[];
+  recoveryRotations?: Record<string, import("./lifecycle-wire.js").RotationRecord>;
 }
 export interface Auth { token: string; deviceId: string; accountGeneration: string }
 export interface Pull {
   accountId: string; accountGeneration: string; sequence: number;
-  grants: SignedGrant[]; events: Event[];
+  grants: SignedGrant[]; events: Event[]; scope?: "authorizations";
+  environmentEvents?: import("./environments.js").EnvironmentEvent[];
 }
 export class Fault extends Error {
   constructor(public readonly status: number, public readonly code: string) { super(code); }

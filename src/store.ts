@@ -1,5 +1,6 @@
 import type { Account } from "./model.js";
 import { Fault } from "./model.js";
+import { validateRecoveryState } from "./lifecycle-wire.js";
 export interface Store {
   create(account: Account): void;
   byEmail(email: string): string | undefined;
@@ -15,6 +16,7 @@ export interface Sql {
 // M1 uses a bounded account document; a normalized event table is a later scaling step.
 export class SqlStore implements Store {
   private document(account: Account): string {
+    validateRecoveryState(account);
     const data = JSON.stringify(account);
     if (Buffer.byteLength(data) > 1_000_000) throw new Fault(503, "account_capacity_reached");
     return data;

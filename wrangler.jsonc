@@ -30,12 +30,18 @@
   ],
   "vars": {
     "ALLOW_REGISTRATION": "false",
-    "REQUIRE_EMAIL_VERIFICATION": "true"
+    "REQUIRE_EMAIL_VERIFICATION": "true",
+    "EMAIL_FROM": ""
   },
   "observability": {
     "enabled": true,
     "traces": {
       "enabled": true
     }
-  }
+  },
+  "send_email": [
+    {
+      "name": "EMAIL"
+    }
+  ]
 }
