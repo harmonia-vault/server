@@ -14,6 +14,14 @@ export class SyntheticVault extends AccountVault {
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS synthetic_mail (message TEXT NOT NULL)");
     return this.ctx.storage.sql.exec<{ message: string }>("SELECT message FROM synthetic_mail").toArray().map(row => JSON.parse(row.message) as Email);
   }
+  async notificationProbe(): Promise<{ now:number; scheduledAlarm:number|null; socketStates:number[] }> { return { now: Date.now(), scheduledAlarm: await this.ctx.storage.getAlarm(), socketStates: this.ctx.getWebSockets().map(ws=>ws.readyState) }; }
+  resetGeneration(accountId: string): void {
+    const row = this.ctx.storage.sql.exec<{data:string}>("SELECT data FROM accounts WHERE id=?", accountId).toArray()[0]!;
+    const account = JSON.parse(row.data) as Account; account.generation = "2";
+    this.ctx.storage.sql.exec("UPDATE accounts SET data=? WHERE id=?", JSON.stringify(account), accountId);
+    // 测试专用触发 alarm，让正式通知内核重查修改后的权威状态。
+    this.ctx.waitUntil(this.alarm());
+  }
   seed(account: Account): void {
     this.ctx.storage.sql.exec("INSERT INTO accounts(id,email,data) VALUES(?,?,?)", account.id, account.email, JSON.stringify(account));
   }
@@ -28,6 +36,10 @@ export default {
       await env.DIRECTORY.prepare("INSERT INTO account_directory(email,account_id) VALUES(?,?)").bind(account.email, account.id).run();
       return Response.json({ seeded: true });
     }
+    const probe = new URL(request.url).pathname.match(/^\/test\/notification-probe\/([A-Za-z0-9._:-]+)$/);
+    if (probe) return Response.json(await env.FIXTURES.getByName(probe[1]!).notificationProbe());
+    const reset = new URL(request.url).pathname.match(/^\/test\/reset-generation\/([A-Za-z0-9._:-]+)$/);
+    if (reset) { await env.FIXTURES.getByName(reset[1]!).resetGeneration(reset[1]!); return Response.json({ reset: true }); }
     const mailbox = new URL(request.url).pathname.match(/^\/test\/mail\/([A-Za-z0-9._:-]+)$/);
     if (mailbox) return Response.json(await env.FIXTURES.getByName(mailbox[1]!).mails());
     return worker.fetch(request, { ...env, ALLOW_REGISTRATION: env.ALLOW_REGISTRATION ?? "false", REQUIRE_EMAIL_VERIFICATION: env.REQUIRE_EMAIL_VERIFICATION ?? "true", EMAIL_FROM: env.EMAIL_FROM ?? "",

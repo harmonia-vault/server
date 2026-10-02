@@ -6,6 +6,7 @@ export interface Store {
   byEmail(email: string): string | undefined;
   read(accountId: string): Account | undefined;
   transaction<T>(accountId: string, operation: (account: Account) => T): T;
+  onCommit?(listener: (accountId: string) => void): () => void;
 }
 export interface Sql {
   execute(query: string, params?: (string | number | null)[]): void;
@@ -15,6 +16,8 @@ export interface Sql {
 // A single versioned account row keeps credentials, permissions and events in one atomic domain.
 // M1 uses a bounded account document; a normalized event table is a later scaling step.
 export class SqlStore implements Store {
+  private readonly listeners = new Set<(accountId: string) => void>();
+  onCommit(listener: (accountId: string) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private document(account: Account): string {
     validateRecoveryState(account);
     const data = JSON.stringify(account);
@@ -38,12 +41,17 @@ export class SqlStore implements Store {
     return row ? JSON.parse(String(row.data)) as Account : undefined;
   }
   transaction<T>(accountId: string, operation: (account: Account) => T): T {
-    return this.sql.transaction(() => {
+    let changed = false;
+    const result = this.sql.transaction(() => {
       const account = this.read(accountId);
       if (!account) throw new Fault(401, "unauthorized");
-      const result = operation(account);
-      this.sql.execute("UPDATE accounts SET data=? WHERE id=?", [this.document(account), accountId]);
+      const before = JSON.stringify(account), result = operation(account), after = this.document(account);
+      this.sql.execute("UPDATE accounts SET data=? WHERE id=?", [after, accountId]);
+      changed = before !== after;
       return result;
     });
+    // 通知失败不能把已提交事务伪装为失败；观察者只在真正 COMMIT 后运行。
+    if (changed) for (const listener of this.listeners) { try { listener(accountId); } catch { /* 下次拉取仍可补漏 */ } }
+    return result;
   }
 }

@@ -34,9 +34,9 @@
     "EMAIL_FROM": ""
   },
   "observability": {
-    "enabled": true,
+    "enabled": false,
     "traces": {
-      "enabled": true
+      "enabled": false
     }
   },
   "send_email": [

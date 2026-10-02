@@ -14,6 +14,7 @@
 - 已登记设备可用独立开机挑战取得设备绑定会话，无需密码登录；单次 nonce、两公钥、当前授权和账号代际在服务端重新核验。
 - 恢复码持钥取得受限会话；完整封套、新两公钥及新码重签的固定可信根一起原子轮换，支持幂等状态查询。协议与限制见 [恢复协议](https://github.com/harmonia-vault/protocol/blob/main/docs/RECOVERY.md) 和 [开机会话](https://github.com/harmonia-vault/protocol/blob/main/docs/BOOT-SESSION.md)。
 - 邮箱验证与邮件证明的破坏性重置采用同一账号事务；旧权限/会话和 vault 原子失效，支持结果查询与幂等重试。Node 使用严格 TLS SMTP，Workers 使用官方 EmailService 绑定，测试不发送真实邮件。配置与接口见 [邮箱说明](docs/EMAIL.md)。
+- WebSocket 只发送持久序号提示，使用请求头单次票据与逐次当前授权检查；断线仍按原拉取序号补漏。本人写入收据可核验丢失响应后的接受状态。接口见 [通知与结果查询](docs/NOTIFICATIONS.md)。
 - 管理签名支持环境创建、密文名称修改、删除、完整密钥轮换和全局设备撤销；写入后经相同持久序号拉取下发。接口与容量边界见 [环境生命周期](docs/ENVIRONMENTS.md)。
 
 ## 本机开发
@@ -47,7 +48,7 @@ HARMONIA_DATABASE=/tmp/harmonia-local-test/harmonia.sqlite mise exec -- pnpm sta
 
 暂停模式可请求 `GET .../pull?after=<authorizationSequence>&scope=authorizations`：返回 `scope:"authorizations"`、当前 `grants`、签名 `environmentEvents`，普通 `events` 为空。授权检查点独立于数据检查点，暂停刷新不应用变量或推进数据序号；恢复时如授权检查点领先，须全量补拉。环境删除墓碑按接受时主体列表下发，即使当前 grant 已清除也能停止旧来源；其他历史环境事件须重新检查当前可读权限。轮换事件保留完整签名 manifest，可能包含密文，仅用于校验和生命周期处理，不能在暂停时应用其中变量。
 
-拉取返回 `{accountId,accountGeneration,sequence,grants,events,environmentEvents}`，每个事件包含 `{sequence,mutation,authorization}`。只下发当前可读环境、当前密钥版本的密文；当前授权快照也包含已过期/撤销授权，便于客户端清除缓存。账号序号不保证对单个设备连续：被过滤的其他环境和授权更新仍占序号。首次获授权、重新获授权或密钥版本变化时，客户端必须 `after=0` 全量重建；不能沿用此前全局 checkpoint。无 WebSocket，当前调用方主动拉取；通知层尚待实现。
+拉取返回 `{accountId,accountGeneration,sequence,grants,events,environmentEvents}`，每个事件包含 `{sequence,mutation,authorization}`。只下发当前可读环境、当前密钥版本的密文；当前授权快照也包含已过期/撤销授权，便于客户端清除缓存。账号序号不保证对单个设备连续：被过滤的其他环境和授权更新仍占序号。首次获授权、重新获授权或密钥版本变化时，客户端必须 `after=0` 全量重建；不能沿用此前全局 checkpoint。WebSocket 只提示当前持久序号；断线后从本地检查点补拉，定期拉取仍负责漏通知补偿。
 
 ## 集成测试入口
 
@@ -65,7 +66,7 @@ mise exec -- pnpm exec tsx tests/synthetic-server.ts
 
 `Dockerfile` 构建 Node 24 单实例服务，以非 root 用户运行，`/data` 为 SQLite 持久卷，不依赖 Cloudflare。当前服务只监听容器内 loopback，外部端口映射本身不能访问；HTTPS 代理必须共享服务网络命名空间。容器构建/运行通过与否见 [测试记录](docs/TESTING.md)。本轮没有发布镜像或部署服务。
 
-Workers 配置使用每账号 `ACCOUNTS` DO 与 `DIRECTORY` D1。数据库 ID 是占位值；不要直接部署。线上资源和 Argon2id 配额尚未验证；本地 workerd 结果不能代替上线验收，也不能据此降低密码参数。
+Workers 配置使用每账号 `ACCOUNTS` DO 与 `DIRECTORY` D1。数据库 ID 是占位值；不要直接部署。自动日志/trace 观测默认关闭，启用前必须验证认证头与正文脱敏。线上资源和 Argon2id 配额尚未验证；本地 workerd 结果不能代替上线验收，也不能据此降低密码参数。
 
 ## 未完成的安全与产品门槛
 
@@ -74,6 +75,6 @@ Workers 配置使用每账号 `ACCOUNTS` DO 与 `DIRECTORY` D1。数据库 ID �
 - 管理签名和写入签名已验证，完整历史授权链的客户端信任证明、历史接受时间证据及生产限流仍需完善。
 - 单账号文档限制 1 MB，历史与幂等收据计入；超过容量拒绝写入并回滚。环境变更请求体上限 1 MB，其他接口上限 100 kB。较大的完整轮换仍可能超过账号总容量，尚未做面向大历史的分表、分页/压缩或快照检查点。
 - 暂未定义独立账号级管理授权，因此当前拒绝删除最后一个环境；可先创建新环境再删除旧环境。不会从密码登录或根公钥字段隐式提升管理权限。
-- 服务端开机持钥续期入口已实现；三平台无人登录启动及系统密钥保护仍需完整验收。当前持钥会话最长一小时。WebSocket 通知未实现；Docker 仅单实例，不支持多副本并发数据库访问。SMTP 隔离 TLS 回归已通过，真实外部邮件服务器与投递未验收。
+- 服务端开机持钥续期入口已实现；三平台无人登录启动及系统密钥保护仍需完整验收。当前持钥会话最长一小时。WebSocket 通知已通过本地回归，线上休眠/容量与 TCP 关闭仍待验收；Docker 仅单实例，不支持多副本并发数据库访问。SMTP 隔离 TLS 回归已通过，真实外部邮件服务器与投递未验收。
 
 真实检查结果见 [测试记录](docs/TESTING.md)，明确区分通过、失败与未运行。Docker 隔离测试可在本机镜像构建后运行 `python3 tests/docker-smoke.py`；仅创建随机测试容器和卷，结束后清理。

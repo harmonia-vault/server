@@ -3,7 +3,11 @@ import type { VaultService } from "./service.js";
 import { accountRoute } from "./http-account.js";
 import { lifecycleRoute } from "./http-lifecycle.js";
 import { enrollmentRoute } from "./http-enrollment.js";
+import { NotificationAuthority } from "./notifications.js";
 import { environmentRoute } from "./http-environments.js";
+export function bodyLimit(method: string, pathname: string): number {
+  return method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/environment-changes$/.test(pathname) ? 1_000_000 : 100_000;
+}
 export async function body(request: Request, maxBody = 100_000): Promise<Record<string, unknown>> {
   if (!Number.isSafeInteger(maxBody) || maxBody <= 0 || maxBody > 1_000_000) throw new Fault(500, "body_limit_invalid");
   if (!request.headers.get("content-type")?.startsWith("application/json")) throw new Fault(415, "json_required");
@@ -18,7 +22,7 @@ export async function body(request: Request, maxBody = 100_000): Promise<Record<
     return result as Record<string, unknown>;
   } catch { throw new Fault(400, "json_invalid"); }
 }
-function auth(request: Request): Auth {
+export function requestAuth(request: Request): Auth {
   const token = request.headers.get("authorization")?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
   const deviceId = request.headers.get("x-harmonia-device-id");
   const accountGeneration = request.headers.get("x-harmonia-account-generation");
@@ -45,10 +49,17 @@ export async function route(request: Request, service: VaultService): Promise<Re
       if (environment.handled) return Response.json(environment.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
       const lifecycle = await lifecycleRoute(request, service.store);
       if (lifecycle.handled) return Response.json(lifecycle.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
-      const match = url.pathname.match(/^\/v1\/accounts\/([A-Za-z0-9._:-]+)\/(pull|mutations|grants|device-challenges|device-sessions)$/);
+      const match = url.pathname.match(/^\/v1\/accounts\/([A-Za-z0-9._:-]+)\/(pull|mutations|mutation-status|grants|device-challenges|device-sessions|notification-tickets)$/);
       if (!match) throw new Fault(404, "not_found");
-      const accountId = match[1]!; const operation = match[2]!; const credentials = auth(request);
-      if (request.method === "POST" && operation === "device-challenges") {
+      const accountId = match[1]!; const operation = match[2]!; const credentials = requestAuth(request);
+      if (request.method === "POST" && operation === "notification-tickets") {
+        if (url.search) throw new Fault(400, "query_forbidden");
+        const b = await body(request); if (Object.keys(b).length) throw new Fault(400, "fields_invalid");
+        result = await new NotificationAuthority(service.store).issue(accountId, credentials);
+      } else if (request.method === "GET" && operation === "mutation-status") {
+        if (Array.from(url.searchParams.keys()).join("|") !== "idempotencyKey") throw new Fault(400, "query_invalid");
+        result = await service.mutationStatus(accountId, credentials, url.searchParams.get("idempotencyKey")!);
+      } else if (request.method === "POST" && operation === "device-challenges") {
         await body(request); result = await service.deviceChallenge(accountId, credentials);
       } else if (request.method === "POST" && operation === "device-sessions") {
         const b = await body(request);

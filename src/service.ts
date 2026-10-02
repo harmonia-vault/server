@@ -160,6 +160,12 @@ export class VaultService {
       return { sequence, replayed: false };
     });
   }
+  async mutationStatus(accountId: string, auth: Auth, idempotencyKey: string): Promise<{ idempotencyKey: string; accepted: boolean; sequence?: number; contentHash?: string }> {
+    identifier(idempotencyKey);
+    const receipt = await this.authenticated(accountId, auth, account => account.idempotency[`mutation/${auth.deviceId}/${idempotencyKey}`]);
+    if (!receipt) return { idempotencyKey, accepted: false };
+    return { idempotencyKey, accepted: true, sequence: receipt.sequence, contentHash: await tokenHash(receipt.content) };
+  }
   async pull(accountId: string, auth: Auth, after: number, scope?: "authorizations"): Promise<Pull> {
     if (scope !== undefined && scope !== "authorizations") throw new Fault(400, "scope_invalid");
     if (!Number.isSafeInteger(after) || after < 0) throw new Fault(400, "checkpoint_invalid");

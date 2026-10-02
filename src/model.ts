@@ -32,6 +32,7 @@ export interface Account {
   deletedEnvironmentIds?: Record<string, string>;
   environmentLabels?: Record<string, string>;
   deviceRevocations?: Record<string, import("./environments.js").RevocationRecord>;
+  notificationTickets?: import("./notifications.js").NotificationTicket[];
   bootChallenges?: import("./lifecycle-wire.js").BootChallenge[];
   recoveryChallenges?: import("./lifecycle-wire.js").RecoveryChallenge[];
   recoveryRotations?: Record<string, import("./lifecycle-wire.js").RotationRecord>;
