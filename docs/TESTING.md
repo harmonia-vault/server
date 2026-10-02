@@ -22,7 +22,7 @@
 - `mise exec -- pnpm build`：Node 生产源码构建通过；测试夹具不进入 dist。
 - Workers 密码派生资源准入：真正重叠的 64 MiB 派生返回受控限流；本地 workerd 同时到达的两次登录实际串行成功，参数没有降低。未知邮箱也进行相同参数验证。
 - Wrangler 4.147.0 生成含官方 EMAIL 绑定的配置类型成功；`wrangler deploy --dry-run --autoconfig=false` 本地打包通过，最新多管理 v2 版本约 265.14 KiB（gzip 65.50 KiB），没有上传或部署。
-- Docker 29.4 / OrbStack：最新通知版本镜像本机构建成功；Mac 恢复后再次运行的隔离 smoke 退出 0。`python3 tests/docker-smoke.py` 验证随机隔离卷中的合成空账号注册、容器重启后登录和账号 ID 保留、非 root 进程、`/data` 权限 0700、拒绝远程明文绑定。没有发布端口，创建的测试容器和卷已清理。
+- Docker 29.4 / OrbStack：2026-10-02 UTC 最新多管理 v2 源码重新构建镜像通过；随后隔离 smoke 退出 0。此前通知切片与 Mac 恢复后的 smoke 也实际通过。`python3 tests/docker-smoke.py` 验证随机隔离卷中的合成空账号注册、容器重启后登录和账号 ID 保留、非 root 进程、`/data` 权限 0700、拒绝远程明文绑定。没有发布端口，创建的测试容器和卷已清理。
 - SMTP 配置测试：仅 465 TLS / 587 强制 STARTTLS，禁 debug/logger；只检查配置，没有网络投递。
 
 ## 修复过的检查失败
