@@ -2,7 +2,7 @@ import { originalInitialization } from "./initialization-evidence.js";
 import { environmentChangeBytes } from "./environments.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { Fault, grantKey, type SignedGrant } from "./model.js";
-import { bytes, generation, grantBytes, identifier, verify } from "./protocol.js";
+import { bytes, generation, grantBytes, identifier, mutationBytes, verify } from "./protocol.js";
 import { canonical, enrollmentFields, exact, own, type EnrollmentAccount, type EnrollmentCertificate, type PairingContext } from "./enrollment-wire.js";
 import { issuerAuthorityHash, issuerNodeFields, issuerProofCanonical as importLegacyCanonical, type IssuerEnrollment } from "./issuer-proof.js";
 import { environmentChangeHash, environmentOriginBytes, environmentOriginHash, environmentRights, originDigest, rightsFields, type SignedEnvironmentOrigin } from "./environment-origin.js";
@@ -257,8 +257,9 @@ function initialAuthorityHashes(account: EnrollmentAccount): Set<string> {
   if (!original) fail("initialization_evidence_required");
   return new Set(original.proposal.environments.map(environment => issuerAuthorityHash(environment.grant)));
 }
-export function issuerOriginStillCurrent(account: EnrollmentAccount, certificate: EnrollmentApprovalV3): void {
-  const graph = verifyIssuerOriginProof(certificate), proof = certificate.issuerProof, root = account.trustRoot, initial = initialAuthorityHashes(account);
+/** 精确已接受历史只证明来源；不检查当前设备角色，也不赋予当前在线权限。 */
+function acceptedIssuerHistory(account: EnrollmentAccount, proof: IssuerOriginProof, graph: VerifiedOriginGraph, initial: Set<string>): void {
+  const root = account.trustRoot;
   if (!root || root.rootDeviceId !== proof.trustRoot.rootDeviceId || root.rootSigningPublicKey !== proof.trustRoot.rootSigningPublicKey || root.rootReceivingPublicKey !== proof.trustRoot.rootReceivingPublicKey) fail();
   for (const node of [...proof.path, ...proof.identityPaths.flat()]) {
     const stored = own(account.deviceEnrollments, node.approval.context.initiatorDeviceId);
@@ -267,6 +268,12 @@ export function issuerOriginStillCurrent(account: EnrollmentAccount, certificate
   for (const [h, origin] of graph.origins) {
     const found = account.environmentHistory?.find(event => event.origin && environmentOriginHash(event.origin) === h);
     if (found && (environmentChangeHash(environmentChangeBytes(found.change.change), found.change.signature) !== origin.origin.changeHash || JSON.stringify(rightsFields(found.change.change.grants.map(environmentRights).sort((first, second) => compare(first.subjectDeviceId, second.subjectDeviceId)))) !== JSON.stringify(rightsFields(origin.origin.after)))) fail("issuer_origin_unaccepted");
+    if (found) {
+      const c = found.change.change, o = origin.origin;
+      const bindings = [[o.accountId, c.accountId], [o.accountGeneration, c.accountGeneration], [o.actorDeviceId, c.deviceId], [o.environmentId, c.environmentId], [o.operation, c.operation], [o.authorityEnvironmentId, c.authorityEnvironmentId], [o.authorityKeyVersion, c.authorityKeyVersion], [o.authorityGrantGeneration, c.authorityGrantGeneration], [o.previousKeyVersion, c.previousKeyVersion], [o.keyVersion, c.keyVersion], [o.expectedSequence, c.expectedSequence], [o.idempotencyKey, c.idempotencyKey]];
+      if (bindings.some(([first, second]) => first !== second)) fail("issuer_origin_unaccepted");
+      verify(graph.identities.get(o.actorDeviceId)!.signing, environmentChangeBytes(c), found.change.signature);
+    }
     if (!found || JSON.stringify(environmentOriginBytes(found.origin!.origin)) !== JSON.stringify(environmentOriginBytes(origin.origin)) || found.origin!.signature !== origin.signature || found.sequence !== Number(BigInt(origin.origin.expectedSequence) + 1n) || issuerAuthorityHash(found.authorization) !== origin.origin.authorityHash) fail("issuer_origin_unaccepted");
   }
   for (const [h, node] of graph.authorities) {
@@ -281,6 +288,10 @@ export function issuerOriginStillCurrent(account: EnrollmentAccount, certificate
       if (found.authorization !== null || found.originHash || !initial.has(h)) fail("issuer_environment_evidence_required");
     } else if (found.originHash || !found.authorization || issuerAuthorityHash(found.authorization) !== node.parentHash) fail("issuer_authority_parent_mismatch");
   }
+}
+export function issuerOriginStillCurrent(account: EnrollmentAccount, certificate: EnrollmentApprovalV3): void {
+  const graph = verifyIssuerOriginProof(certificate), proof = certificate.issuerProof;
+  acceptedIssuerHistory(account, proof, graph, initialAuthorityHashes(account));
   for (const target of proof.targets) {
     const current = own(account.grants, grantKey(target.environmentId, certificate.context.approverDeviceId));
     if (!current || issuerAuthorityHash(current) !== target.authorityHash) fail("issuer_authority_changed");
@@ -349,7 +360,46 @@ export function buildIssuerEvidence(account: EnrollmentAccount, deviceId: string
   const proof: IssuerOriginProof = { profile: "harmonia/issuer-proof/v2", accountId: account.id, accountGeneration: account.generation, trustRoot: structuredClone(root),
     path: structuredClone(path), authorities: [...authorities.values()], targets: targets.map(grant => ({ environmentId: grant.grant.environmentId, authorityHash: issuerAuthorityHash(grant) })),
     origins: [...origins.values()], identityPaths: structuredClone(leaves) };
-  verifyIssuerOriginGraph(proof);
+  acceptedIssuerHistory(account, proof, verifyIssuerOriginGraph(proof), initial);
   return proof;
 }
 
+/**
+ * 受限恢复已证明持恢复钥；图仅核验历史来源，不要求任一设备当前存活或Admin。
+ * 每个target只是现存环境当前keyVersion的历史验证入口，不是新设备授权。
+ */
+export function buildRecoveryIssuerEvidence(account: EnrollmentAccount): IssuerOriginProof | null {
+  const original = originalInitialization(account);
+  if (!original) return null;
+  const environments = Object.values(account.environments).sort((first, second) => compare(first.id, second.id));
+  if (!environments.length) return null;
+  const current = Object.values(account.grants).filter(signed => {
+    const g = signed.grant;
+    return g.accountGeneration === account.generation && g.role !== "none" && account.environments[g.environmentId]?.keyVersion === g.keyVersion;
+  });
+  const sources = [...original.proposal.environments.map(environment => environment.grant), ...current];
+  const targets: SignedGrant[] = [];
+  for (const environment of environments) {
+    const candidates = current.filter(signed => signed.grant.environmentId === environment.id);
+    if (!candidates.length) {
+      // 全部设备撤销或currentGrants均none时，保留的精确历史仍可证明数据来源。
+      const historical = (account.grantHistory ?? []).filter(event => {
+        const g = event.grant.grant;
+        return g.accountGeneration === account.generation && g.environmentId === environment.id && g.keyVersion === environment.keyVersion && g.role !== "none";
+      }).sort((first, second) => second.sequence - first.sequence || compare(issuerAuthorityHash(first.grant), issuerAuthorityHash(second.grant)));
+      if (historical[0]) candidates.push(historical[0].grant);
+    }
+    if (!candidates.length) fail("issuer_authority_unaccepted");
+    candidates.sort((first, second) => compare(issuerAuthorityHash(first), issuerAuthorityHash(second)));
+    targets.push(candidates[0]!); sources.push(candidates[0]!);
+  }
+  for (const event of account.events) {
+    const m = event.mutation.mutation;
+    if (account.environments[m.environmentId]?.keyVersion !== m.keyVersion) continue;
+    const g = event.authorization.grant;
+    if (m.accountId !== account.id || m.accountGeneration !== account.generation || g.accountId !== account.id || g.accountGeneration !== account.generation || g.subjectDeviceId !== m.deviceId || g.environmentId !== m.environmentId || g.keyVersion !== m.keyVersion || g.grantGeneration !== m.grantGeneration || (g.role !== "rw" && g.role !== "admin")) fail("mutation_binding_invalid");
+    verify(g.subjectSigningPublicKey, mutationBytes(m), event.mutation.signature);
+    sources.push(event.authorization);
+  }
+  return buildIssuerEvidence(account, original.proposal.device.id, sources, targets);
+}

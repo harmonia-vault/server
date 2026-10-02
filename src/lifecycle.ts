@@ -1,5 +1,5 @@
 import { originalInitialization } from "./initialization-evidence.js";
-import { issuerOriginCapability } from "./issuer-origin.js";
+import { buildRecoveryIssuerEvidence, issuerOriginCapability } from "./issuer-origin.js";
 import type { Account, Auth, Session } from "./model.js";
 import { Fault } from "./model.js";
 import { bytes, generation, identifier, verify } from "./protocol.js";
@@ -112,7 +112,7 @@ export class LifecycleService {
       return structuredClone({ accountId, accountGeneration: account.generation, recoveryGeneration: account.recoveryGeneration,
         recoverySigningPublicKey: account.recoverySigningPublicKey, recoveryReceivingPublicKey: account.recoveryReceivingPublicKey,
         rotationRequired: current.kind === "recovery" ? current.rotationRequired : false, sequence: account.sequence,
-        ...(capability ? { originalInitialization: originalInitialization(account) } : {}),
+        ...(capability ? { originalInitialization: originalInitialization(account), issuerEvidence: buildRecoveryIssuerEvidence(account) } : {}),
         trustRoot: account.trustRoot ?? null, publicDevices: Object.values(account.devices), currentGrants: Object.values(account.grants), grantHistory: account.grantHistory ?? [],
         environments: Object.values(account.environments).map(e => ({ environmentId: e.id, keyVersion: e.keyVersion, envelope: e.recoveryEnvelope })),
         events: account.events.filter(e => e.mutation.mutation.keyVersion === account.environments[e.mutation.mutation.environmentId]?.keyVersion) });
