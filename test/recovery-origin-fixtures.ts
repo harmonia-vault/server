@@ -80,8 +80,8 @@ async function accountFixture(includeReader = false, withOriginal = true): Promi
   return a;
 }
 
-export async function nodeHarness(): Promise<Harness> {
-  const dir=mkdtempSync(join(tmpdir(),"harmonia-recovery-origin-node-")),db=nodeStore(join(dir,"state.sqlite")),a=await accountFixture(),sessionTokens=new Map<string,string>();
+export async function nodeHarness(includeReader = false): Promise<Harness> {
+  const dir=mkdtempSync(join(tmpdir(),"harmonia-recovery-origin-node-")),db=nodeStore(join(dir,"state.sqlite")),a=await accountFixture(includeReader),sessionTokens=new Map<string,string>();
   db.store.create(a);
   const server=nodeServer(new VaultService(db.store,{allowRegistration:false,requireEmailVerification:true}));server.server.listen(0,"127.0.0.1");await once(server.server,"listening");
   const base=`http://127.0.0.1:${(server.server.address() as {port:number}).port}`;
@@ -91,8 +91,8 @@ export async function nodeHarness(): Promise<Harness> {
     const execute=db.sql.execute.bind(db.sql);let failed=false;db.sql.execute=(query,params)=>{if(!failed&&query.startsWith("UPDATE accounts")){failed=true;throw Error("synthetic SQLite recovery commit failure");}execute(query,params);};return()=>{db.sql.execute=execute;};
   },close:async()=>{server.closeNotifications();server.server.close();await once(server.server,"close");db.sql.close();rmSync(dir,{recursive:true,force:true});}};
 }
-export async function workerHarness(): Promise<Harness> {
-  const dir=mkdtempSync(join(tmpdir(),"harmonia-recovery-origin-worker-")),a=await accountFixture(),sessionTokens=new Map<string,string>();
+export async function workerHarness(includeReader = false): Promise<Harness> {
+  const dir=mkdtempSync(join(tmpdir(),"harmonia-recovery-origin-worker-")),a=await accountFixture(includeReader),sessionTokens=new Map<string,string>();
   const built=await build({entryPoints:["test/worker-harness.ts"],absWorkingDir:process.cwd(),bundle:true,write:false,format:"esm",platform:"browser",target:"es2023",external:["cloudflare:workers","node:*"],banner:{js:'import { Buffer } from "node:buffer";'}});
   const mf=new Miniflare({modules:true,script:built.outputFiles[0]!.text,compatibilityDate:"2026-07-30",compatibilityFlags:["nodejs_compat"],durableObjects:{ACCOUNTS:{className:"SyntheticVault",useSQLite:true},FIXTURES:{className:"SyntheticVault",useSQLite:true}},d1Databases:{DIRECTORY:"directory"},durableObjectsPersist:join(dir,"objects"),d1Persist:join(dir,"directory")});
   await mf.dispatchFetch("https://synthetic.invalid/test/seed",{method:"POST",body:JSON.stringify(a)});

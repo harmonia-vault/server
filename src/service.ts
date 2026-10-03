@@ -1,5 +1,6 @@
 import { buildIssuerEvidence, issuerOriginCapability } from "./issuer-origin.js";
 import { AccountLifecycle } from "./account-lifecycle.js";
+import { issuerAuthorityHash } from "./issuer-proof.js";
 import type { EmailTransport } from "./email-transport.js";
 import type { Account, Auth, Grant, Pull, SignedGrant, SignedMutation } from "./model.js";
 import { Fault, grantKey } from "./model.js";
@@ -192,9 +193,24 @@ export class VaultService {
       // 返回数据的历史写入者可能不在本设备当前授权路径中；候选闭包还须包含
       // 这些精确冻结的签名授权及双签身份。暂停流没有普通数据事件。
       const sources = [...readableGrants, ...events.map(event => event.authorization), ...environmentEvents.map(event => event.authorization)];
+      const targets = new Map(readableGrants.map(grant => [grant.grant.environmentId, grant]));
+      if (capability) for (const signed of grants) {
+        let source = signed;
+        if (signed.grant.role === "none") {
+          const accepted = account.grantHistory?.find(event => issuerAuthorityHash(event.grant) === issuerAuthorityHash(signed));
+          if (!accepted?.authorization || accepted.originHash) throw new Fault(403, "issuer_authority_unaccepted");
+          const parent = accepted.authorization.grant, child = signed.grant;
+          if (parent.role !== "admin" || parent.accountId !== account.id || parent.accountGeneration !== account.generation || parent.subjectDeviceId !== child.issuerDeviceId || parent.environmentId !== child.environmentId || parent.keyVersion !== child.keyVersion) throw new Fault(403, "issuer_authority_parent_mismatch");
+          verify(parent.subjectSigningPublicKey, grantBytes(child), signed.signature);
+          source = accepted.authorization;
+        }
+        sources.push(source);
+        // 失效授权的target只供历史验签；当前可读权限仍由readable独立决定。
+        if (!targets.has(signed.grant.environmentId)) targets.set(signed.grant.environmentId, source);
+      }
       return structuredClone({ accountId, accountGeneration: account.generation, sequence: account.sequence, grants,
         ...(scope ? { scope } : {}),
-        ...(capability ? { issuerEvidence: readableGrants.length ? buildIssuerEvidence(account, auth.deviceId, sources, readableGrants) : null } : {}),
+        ...(capability ? { issuerEvidence: targets.size ? buildIssuerEvidence(account, auth.deviceId, sources, [...targets.values()]) : null } : {}),
         environmentEvents, events });
     });
   }

@@ -13,7 +13,7 @@
 - 事务内按服务器接受顺序分配序号；同设备、同幂等 ID 和同内容重试返回原序号，修改内容则拒绝。SQLite 重启后继续拉取补漏。
 - 客户端 SHA256 密码等价凭据在服务端用独立随机盐和 Argon2id（64 MiB、3 次、并行度 1）验证。Node 使用 hash-wasm，Workers 使用成熟的 noble/hashes 实现，相同参数互操作。
 - 已登记设备可用独立开机挑战取得设备绑定会话，无需密码登录；单次 nonce、两公钥、当前授权和账号代际在服务端重新核验。
-- 恢复码持钥取得受限会话；完整封套、新两公钥及新码重签的固定可信根一起原子轮换，支持幂等状态查询。恢复来源图可核验非根新增环境、跨版本历史及全部设备撤销后的数据来源，合同与独立证据见 [完整恢复来源](docs/RECOVERY-SOURCES.md)。协议与限制见 [恢复协议](https://github.com/harmonia-vault/protocol/blob/main/docs/RECOVERY.md) 和 [开机会话](https://github.com/harmonia-vault/protocol/blob/main/docs/BOOT-SESSION.md)。
+- 恢复码持钥取得受限会话；完整封套、新两公钥及新码重签的固定可信根一起原子轮换，支持幂等状态查询。恢复来源图可核验非根新增环境、跨版本历史及全部设备撤销后的数据来源，合同与独立证据见 [完整恢复来源](docs/RECOVERY-SOURCES.md)；每个环境包括空环境都须先核验 [恢复封套签名承诺](docs/RECOVERY-ENVELOPES.md)，不能以 HPKE 成功替代。协议与限制见 [恢复协议](https://github.com/harmonia-vault/protocol/blob/main/docs/RECOVERY.md) 和 [开机会话](https://github.com/harmonia-vault/protocol/blob/main/docs/BOOT-SESSION.md)。
 - 邮箱验证与邮件证明的破坏性重置采用同一账号事务；旧权限/会话和 vault 原子失效，支持结果查询与幂等重试。Node 使用严格 TLS SMTP，Workers 使用官方 EmailService 绑定，测试不发送真实邮件。配置与接口见 [邮箱说明](docs/EMAIL.md)。
 - WebSocket 只发送持久序号提示，使用请求头单次票据与逐次当前授权检查；断线仍按原拉取序号补漏。本人写入收据可核验丢失响应后的接受状态。接口见 [通知与结果查询](docs/NOTIFICATIONS.md)。
 - 管理签名支持环境创建、密文名称修改、删除、完整密钥轮换和全局设备撤销；写入后经相同持久序号拉取下发。非根管理者可通过独立来源签名证明新环境与跨版本权限；v3 配对、完整接收者控制面和恢复原初始化锚见 [来源与 v3](docs/ENROLLMENT-V3.md)。接口与容量边界见 [环境生命周期](docs/ENVIRONMENTS.md)。

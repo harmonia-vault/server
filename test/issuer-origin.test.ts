@@ -334,7 +334,7 @@ for (const [runtime,create] of [["Node TCP",nodeHarness],["workerd HTTP",workerH
       const manager=await h.send("/pairings-v3","POST",{idempotencyKey:"RO-manager",deviceId:"device-D",signingPublicKey:b64(ed25519.getPublicKey(Buffer.alloc(32,7))),receivingPublicKey:b64(x25519.getPublicKey(Buffer.alloc(32,17))),approverDeviceId:"device-C",certificateVersion:"3",capabilities:["issuer-origin-v1"]});assert.equal(manager.status,403);assert.equal(manager.data.error,"admin_required");
       const revoked=structuredClone(g);Object.assign(revoked,{grantGeneration:"2",role:"none",envelope:"",idempotencyKey:"revoke-only-Y"});
       assert.equal((await h.send("/grants","POST",{grant:revoked,signature:b64(ed25519.sign(grantBytes(revoked),seeds.B!))},"B")).status,200);
-      const refresh=await h.send("/pull?after=0&scope=authorizations&capability=issuer-origin-v1","GET",undefined,"C");assert.equal(refresh.status,200);assert.equal(refresh.data.issuerEvidence,null);assert.equal(refresh.data.events.length,0);assert.equal(refresh.data.environmentEvents.length,0);assert.equal(refresh.data.grants[0].grant.role,"none");
+      const refresh=await h.send("/pull?after=0&scope=authorizations&capability=issuer-origin-v1","GET",undefined,"C");assert.equal(refresh.status,200);assert.ok(refresh.data.issuerEvidence);assert.equal(refresh.data.issuerEvidence.authorities.some((node: {grant:SignedGrant})=>node.grant.grant.role==="none"),false);assert.equal(refresh.data.events.length,0);assert.equal(refresh.data.environmentEvents.length,0);assert.equal(refresh.data.grants[0].grant.role,"none");
     }finally{await h.close();}
   });
 }

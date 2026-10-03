@@ -52,7 +52,7 @@ for(const [runtime,create] of [["Node TCP",nodeHarness],["workerd HTTP",workerHa
       for(const [current,gen,id] of [[setup.writer,"2","none-C"],[setup.newX,"3","none-B-X"],[setup.newY,"2","none-B-Y"]] as const){const g=structuredClone(current.grant);Object.assign(g,{grantGeneration:gen,role:"none",envelope:"",idempotencyKey:id});assert.equal((await h.send("/grants","POST",{grant:g,signature:b64(ed25519.sign(grantBytes(g),seeds.B!))},"B")).status,200);}
       await freshRecovery(h);const response=await h.send(path,"GET",undefined,"R");assert.equal(response.status,200,JSON.stringify(response.data));verifySnapshot(h,response.data);assert.equal(response.data.currentGrants.length,3);assert.equal(response.data.currentGrants.every((signed:SignedGrant)=>signed.grant.role==="none"),true);
       assert.equal((await h.send("/boot-challenges","POST",{deviceId:"device-B",accountGeneration:"1"},"login")).data.error,"no_current_grant");
-      assert.equal((await h.send("/pull?after=0&capability=issuer-origin-v1","GET",undefined,"B")).data.issuerEvidence,null);
+      const inactive=await h.send("/pull?after=0&capability=issuer-origin-v1","GET",undefined,"B");assert.ok(inactive.data.issuerEvidence);assert.deepEqual(inactive.data.events,[]);assert.equal(inactive.data.grants.every((g:SignedGrant)=>g.grant.role==="none"),true);
     }finally{await h.close();}
   });
   test(`${runtime} 所有现角色已到期不阻塞历史恢复，也不会恢复设备在线授权`,{timeout:120000},async()=>{
@@ -62,7 +62,7 @@ for(const [runtime,create] of [["Node TCP",nodeHarness],["workerd HTTP",workerHa
       await new Promise(resolve=>setTimeout(resolve,Math.max(1,deadline*1000-Date.now()+20)));await freshRecovery(h);
       const response=await h.send(path,"GET",undefined,"R");assert.equal(response.status,200,JSON.stringify(response.data));verifySnapshot(h,response.data);assert.equal(response.data.currentGrants.every((signed:SignedGrant)=>Number(signed.grant.expiresAt)<=Math.floor(Date.now()/1000)),true);
       assert.equal((await h.send("/boot-challenges","POST",{deviceId:"device-B",accountGeneration:"1"},"login")).data.error,"no_current_grant");
-      const refresh=await h.send("/pull?after=0&scope=authorizations&capability=issuer-origin-v1","GET",undefined,"B");assert.equal(refresh.status,200);assert.equal(refresh.data.issuerEvidence,null);assert.deepEqual(refresh.data.events,[]);
+      const refresh=await h.send("/pull?after=0&scope=authorizations&capability=issuer-origin-v1","GET",undefined,"B");assert.equal(refresh.status,200);assert.ok(refresh.data.issuerEvidence);assert.deepEqual(refresh.data.events,[]);
     }finally{await h.close();}
   });
 }

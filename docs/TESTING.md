@@ -71,3 +71,17 @@ MIT 源码可审阅，不应将以上局部通过描述为生产安全验收。
 - none 签包独立验签、最高代际防倒退、当前 Admin 精确到期后立即拒绝管理、缺档案/历史/原双签初始化整次拒绝均通过。真实 SQLite UPDATE 注入失败回滚新 grant、幂等记录与序号；管理图读取失败也没有提交部分状态。
 
 该切片复用已有 Ed25519/Grant 与全局撤销域，没有改变协议版本或新增可信设备捷径。结构封套仍为合成测试输入；Go 受保护 journal/未知结果与完整手机管理用户流程由独立新验收提供，本节没有提前记录它通过。没有重跑 Docker smoke 或 Wrangler dry-run，没有部署、发布或加入 CI。接口、容量与缺席状态限制见 [授权管理](GRANT-MANAGEMENT.md)。
+
+
+## 后续失效授权来源与恢复封套承诺修复
+
+本节独立于 `f5adbed` 管理/153 项公开基线，保留此前结果。
+
+- 2026-10-03 00:27 UTC 查验最终 `mise run check`：160/160 通过，0 失败、0 跳过；typecheck 与生产 build 通过。任务总耗时 17.45 秒，测试约 17.06 秒。本地 workerd Argon2id 64 MiB/3 次首次登录约 1570 ms，不是线上配额验收。
+- 新增 `test/inactive-grant-evidence.test.ts` 2 项：真实 Node TCP/workerd HTTP 中原 A 双签审批 C，后来的 B 签 none，C 零当前可读权限仍能得到 B 冻结 Admin 及双签身份以独立核验。none 不成为权限节点，历史 target 不授当前权，普通数据及环境事件为空；缺 B 档案拒绝。旧无 capability DTO 不变。
+- 对旧 none/到期 `issuerEvidence:null` 断言改为完整历史来源加零事件，不放宽客户端签名或活跃权限检查。与旧来源/恢复回归合跑 34/34 通过，约 7.32 秒。
+- 新增 `test/recovery-envelope-evidence.test.ts` 5/5 通过，定向约 2.77 秒；Node TCP/workerd SQLite DO 核同账号事务的完整环境签包、当前恢复代际真实十三项轮换包/全封套摘要/根摘要、旧响应不变、权限/代际隔离、裸封套替换与签承诺不相等、签名来源篡改拒绝及真实 SQLite 读取 UPDATE 失败回滚。
+- 实际暴露的两个旧缺口保留为失败历史：跨语言管理中，C 原回执只有 A 身份，B 撤销签名缺 B 历史来源导致 ordinary pull 拒绝；完整恢复中，空 Y 没有 AEAD 值，服务器只凭公开恢复接收公钥封装随机环境钥的攻击曾被接受。修复分别提供严格历史签权及每环境完整签名封套承诺，没有放宽 Go 校验。
+- 独立管理 Go 联合验收修复后两轮通过，约 4.58 秒与 5.62 秒，包括临时 B none、C 清缓存、全局撤销丢响应/AES 重启精确回执，以及旧 token 失效后 boot 只查原 hash；最终 race 当时待执行，没有提前记为通过。独立恢复 Go HTTPS/race 4 主项 8 场景约 15.10 秒通过，含全设备撤销/new Y/rotate X/gen2/来源篡改及空环境公开 HPKE 替包拒绝；空环境反例约 1.26 秒。父任务汇总各验收源码与准确版本。
+
+新恢复封套投影只在 `envelopeEvidence=recovery-envelope-v1` 且原 capability 显式请求时出现，所有来源与 vault 处于同一个快照。所有环境包括空环境先验签名承诺再解封；HPKE 成功不是真实性证据。当前连续恢复授权链/恢复设备证书的新服务路由尚未接入，本节不记录它们通过。此次未重跑 Docker smoke/Wrangler dry-run，未部署、发布或增加 CI。详见 [恢复封套承诺](RECOVERY-ENVELOPES.md)。

@@ -24,7 +24,7 @@ v2 提交幂等内容固定为 `JSON.stringify(["harmonia/environment-submission
 
 ## 控制面候选与读取隔离
 
-普通或暂停拉取显式加 `capability=issuer-origin-v1` 时，返回 `issuerEvidence`：按本设备当前可读目标构造完整控制来源闭包，当前授权与生命周期来源独立于 `after`；普通拉取还加入本次实际返回事件的冻结授权与写入者双签身份路径。暂停流不返回普通数据事件，也不因此引入其数据来源。每个遇到的来源证书都必须包含全部 `before`/`after` 行对应的精确签名授权和身份分支，不能只保留当前读者的一行。来源依赖旧版本时不会自动扩展后来不相关的轮换。没有可读目标时为 `null`，当前签名撤销/过期 grant 仍返回。没有 capability 的旧响应不加来源字段，包括环境事件中的 origin。
+普通或暂停拉取显式加 `capability=issuer-origin-v1` 时，返回 `issuerEvidence`：按本设备当前可读目标构造完整控制来源闭包，当前授权与生命周期来源独立于 `after`；普通拉取还加入本次实际返回事件的冻结授权与写入者双签身份路径。暂停流不返回普通数据事件，也不因此引入其数据来源。每个遇到的来源证书都必须包含全部 `before`/`after` 行对应的精确签名授权和身份分支，不能只保留当前读者的一行。来源依赖旧版本时不会自动扩展后来不相关的轮换。当前签名撤销/过期 grant 仍返回。显式能力响应还提供这些签包的历史验签来源；none 不放授权节点，仅提供接受时冻结的 Admin 及归档身份。没有当前可读权限时，target 只作为历史来源入口，普通事件仍为空；它不赋予本设备当前权限。没有可证明的本设备签名来源时为 `null`。没有 capability 的旧响应不加来源字段，包括环境事件中的 origin。
 
 准备轮换时，管理者使用 `GET /issuer-evidence?environmentId=E&capability=issuer-origin-v1`。只有该环境当前 Admin 的设备绑定会话可以调用，返回 `{sequence, grants, issuerEvidence}`：`grants` 是完整当前有效接收者集合，证明目标仅为操作者自己的当前 Admin。它包括必要的历史 RO/RW 来源与受双签保护的身份分支，不能从目录公钥或历史图猜当前接收集合。
 
