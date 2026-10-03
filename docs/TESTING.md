@@ -110,3 +110,16 @@ MIT 源码可审阅，不应将以上局部通过描述为生产安全验收。
 初跑 3/5，两个失败是测试将 Z 降权却期待仍有 Y Admin 的 E 重试原 Y→Z 创建时被拒绝；当前请求正确检查创建来源 Y。修正测试为对实际来源 Y 降权后 5/5 通过，未放宽当前权限或签名规则。该切片没有新增密码学域、改变旧 Proof2 parser、把 none 当权限或从目录信任公钥。
 
 控制响应保留既定 Proof3 验证所必需的已签初始化/transition/recovered 内嵌 HPKE 材料，但不新增独立恢复 vault 封套列表，也不含业务标签、变量名、业务数据密文、原 token 或私钥。结构封套和值包仍是合成输入，真实 Go HPKE/PAKE 与完整手机用户链由后续独立验收记录；此处不提前称其通过。下一次恢复所需的平坦 source union/DAG 尚未接入，不混入本次结果。没有重跑 Docker smoke/Wrangler dry-run，未部署、发布或加入 CI。合同见 [恢复设备管理](RECOVERED-MANAGEMENT.md)。
+
+
+## 后续重复恢复DAG密码学内核
+
+本节独立于 02689b4 的 183 项第1层公开基线，不把新内核通过记为 HTTP 或手机第二次恢复通过。2026-10-03 03:25 UTC 查验最终 `mise run check`：230/230 通过，0 失败、0 跳过、0 取消；typecheck 与生产 build 通过。任务总时长 17.03 秒，测试约 16.66 秒。本地 workerd Argon2id 64 MiB/3 次首次登录约 1427 ms，仅为本地测量。日志在本机 `/tmp/harmonia-recovery-dag-fullcheck.log`。
+
+新增 `test/recovery-dag.test.ts` 定向 47/47 通过，约 3.67 秒，包含10主项/37子项。Node 独立核验 Go 最终平坦5节点向量的固定字节、引用与双签，最终恢复代际4/序号42；新环境Z及历史E写签名保留，G全环境Admin复轮、G→H三环境RO双签/归档和有限期限均通过。缺失/错误/向前依赖、原锚替换、未使用记录、部分清单、旧域、旧head、严格JSON和配对context/transcript替换拒绝。向量 SHA256 为 `22f82f175fcd940c04e6745150e9399f747bc9954fee3cad0e4af614e0697287`。
+
+共享成熟权限图抽取后，既有恢复/恢复设备管理 Node TCP 与 workerd HTTP 两文件定向 19/19 通过，约 11.74 秒；原4项恢复向量/JSON回归也通过，最终完整230项再次覆盖它们。新内核第一次 typecheck 因抛错箭头函数不能帮助 TypeScript 缩窄 undefined 节点而失败，改为实际返回 never 的函数声明后通过，没有削弱运行时拒绝。一次未提升权限的 tsx 探针被沙箱临时 IPC socket 拒绝，正常授权同命令后编码/hash及验签通过。
+
+本批没有 HTTP DAG hooks、major2协商或持久化状态变更，不把旧1MB账号容量提高到2MiB。新原子接受/nonce当前权限、跨profile幂等、真实第二次恢复HTTPS/SQLite/CLI/手机用户链仍未跑；旧来源契约没有重解释。自审新增实际重签反例曾复现：恢复候选 ID 首次出现在其来源图的旧双签归档内时，可用新公钥重新登记该 ID；候选内核尚未接入 HTTP。已在来源图通过后再次拒绝已有 ID，真实旧恢复钥/新设备钥两签反例通过，最终47项及230完整检查通过。没有通过修改向量或放松 Go 检查避开问题。没有重跑 Docker smoke/Wrangler dry-run，没有部署、发布或增加 CI。详见 [DAG内核范围](RECOVERY-DAG.md)。
+
+新 DAG 入口在 2 MiB/64 层边界内建立独立 JSON 快照，再验完整材料；内部 Map/Set/head/memo 为运行时私有状态，公开 getter 和来源图返回独立快照。新增3主项核验调用方修改原 pin、初始化、平坦记录、source、返回图和 getter Map/Set 不会改变已验状态，也核验快照大小/深度拒绝。内部迭代使用私有 owned 材料，不反复复制 getter；V5 返回状态同样隔离。旧 parser、HTTP 和持久化业务没有改变。

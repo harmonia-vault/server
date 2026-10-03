@@ -197,6 +197,22 @@ export function verifyIssuerRecoveryGraph(proof: IssuerRecoveryProof): VerifiedR
         verifyRecovered(initial, record, source);
         recovered.set(h, record);
     }
+    return verifyRecoveryControlGraph(proof, initial, head, recovered, n => recoveryNodeFields(n as RecoveryPairedEnrollment));
+}
+export interface RecoveryControlPaired { certificateVersion: string; issuerProofHash: string; approval: EnrollmentCertificate }
+export type RecoveryControlArchive = { kind: "paired"; enrollment: RecoveryControlPaired } | { kind: "recovered"; recoveryEnrollmentHash: string };
+export interface RecoveryControlInput {
+    accountId: string; accountGeneration: string; trustRoot: TrustRoot;
+    path: RecoveryControlArchive[]; authorities: IssuerRecoveryAuthority[];
+    targets: { environmentId: string; authorityHash: string }[];
+    origins: SignedEnvironmentOrigin[]; identityPaths: RecoveryControlArchive[][];
+}
+export interface RecoveryControlRecord { submission: { enrollment: import("./recovered-device-wire.js").RecoveredEnrollment; grants: SignedGrant[] }; sequence: number }
+/** 只验控制面。调用方须先验证原初始化、恢复链尾与记录双签；叶不包装成旧完整Proof3。 */
+export function verifyRecoveryControlGraph<R extends RecoveryControlRecord>(proof: RecoveryControlInput, initial: OriginalInitialization, head: RecoveryAuthorityHead, recovered: Map<string, R>, archiveFields: (n: RecoveryControlPaired) => string[]): { authorities: Map<string, IssuerRecoveryAuthority>; identities: Map<string, Identity>; origins: Map<string, SignedEnvironmentOrigin>; head: RecoveryAuthorityHead; recovered: Map<string, R> } {
+    initializationReference(initial);
+    const root: Identity = { id: initial.proposal.device.id, signing: initial.proposal.device.signingPublicKey, receiving: initial.proposal.device.receivingPublicKey }, r = proof.trustRoot;
+    if (proof.accountId !== initial.proof.accountId || proof.accountGeneration !== initial.proof.accountGeneration || r.rootDeviceId !== root.id || r.rootSigningPublicKey !== root.signing || r.rootReceivingPublicKey !== root.receiving || JSON.stringify(trustRootPayload(proof.accountId, proof.accountGeneration, r)) !== JSON.stringify(trustRootPayload(proof.accountId, proof.accountGeneration, head.root)) || r.signature !== head.root.signature) fail();
     const genesis = new Set(initial.proposal.environments.map(e => issuerAuthorityHash(e.grant))), identities = new Map<string, Identity>([[root.id, root]]), usedKeys = new Map<string, string>([[root.signing, root.id], [root.receiving, root.id]]);
     for (const key of head.seenKeys)
         if (key !== root.signing && key !== root.receiving)
@@ -206,7 +222,7 @@ export function verifyIssuerRecoveryGraph(proof: IssuerRecoveryProof): VerifiedR
         if (usedKeys.has(key) && usedKeys.get(key) !== child.id)
             fail(); if (child.signing === child.receiving)
         fail(); identities.set(child.id, child); usedKeys.set(child.signing, child.id); usedKeys.set(child.receiving, child.id); }
-    function walk(path: IssuerRecoveryArchive[]): void {
+    function walk(path: RecoveryControlArchive[]): void {
         let current = root;
         const ids = new Set([root.id]);
         for (let i = 0; i < path.length; i++) {
@@ -227,7 +243,7 @@ export function verifyIssuerRecoveryGraph(proof: IssuerRecoveryProof): VerifiedR
             const archived = node.enrollment, c = archived.approval.context;
             if (c.accountId !== proof.accountId || c.accountGeneration !== proof.accountGeneration || current.id !== c.approverDeviceId || current.signing !== c.approverSigningPublicKey || current.receiving !== c.approverReceivingPublicKey || ids.has(c.initiatorDeviceId))
                 fail();
-            const fields = canonical(recoveryNodeFields(archived));
+            const fields = canonical(archiveFields(archived));
             verify(current.signing, fields, archived.approval.approverSignature);
             verify(c.initiatorSigningPublicKey, fields, archived.approval.initiatorSignature!);
             for (const s of archived.approval.grants) {
@@ -259,7 +275,7 @@ export function verifyIssuerRecoveryGraph(proof: IssuerRecoveryProof): VerifiedR
         }
         authorities.set(h, authority);
     }
-    for (const record of proof.recoveredDevices)
+    for (const record of recovered.values())
         for (const signed of record.submission.grants) {
             const g = signed.grant, h = issuerAuthorityHash(signed);
             for (const [map, key] of [[generations, `${g.environmentId}/${g.subjectDeviceId}/${g.grantGeneration}`], [idempotencies, `${g.issuerDeviceId}/${g.idempotencyKey}`]] as const) {
@@ -374,6 +390,7 @@ export function verifyIssuerRecoveryGraph(proof: IssuerRecoveryProof): VerifiedR
     }
     return { authorities, identities, origins, head, recovered };
 }
+
 export function archivedRecoveryEnrollment(c: EnrollmentCertificate | EnrollmentApprovalV4): RecoveryPairedEnrollment {
     if (!('certificateVersion' in c) || c.certificateVersion !== "4")
         return archivedOriginEnrollment(c as Parameters<typeof archivedOriginEnrollment>[0]);
