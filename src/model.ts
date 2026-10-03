@@ -44,7 +44,7 @@ export interface Pull {
   accountId: string; accountGeneration: string; sequence: number;
   grants: SignedGrant[]; events: Event[]; scope?: "authorizations";
   environmentEvents?: import("./environments.js").EnvironmentEvent[];
-  issuerEvidence?: import("./issuer-origin.js").IssuerOriginProof | import("./issuer-recovery.js").IssuerRecoveryProof | null;
+  issuerEvidence?: import("./issuer-origin.js").IssuerOriginProof | import("./issuer-recovery.js").IssuerRecoveryProof | import("./recovery-dag-wire.js").IssuerRecoveryDAG | null;
 }
 export class Fault extends Error {
   constructor(public readonly status: number, public readonly code: string) { super(code); }

@@ -1,3 +1,4 @@
+import { DAGRequired, type RecoveryDAGAccount } from './recovery-dag-account.js';
 import { enrollmentV4Fields, issuerRecoveryStillCurrent, type EnrollmentApprovalV4, type IssuerRecoveryProof } from "./issuer-recovery.js";
 import { registrationVerificationRequired } from "./registration.js";
 import { recoveryAuthorityCapability } from "./recovery-authority-wire.js";
@@ -33,7 +34,7 @@ function manager(a: Account, auth: Auth, hash: string, now: number): void {
   if (current.deviceId !== auth.deviceId) throw new Fault(403, "device_proof_required");
   if (!Object.keys(a.environments).some(id => { try { return permission(a, auth.deviceId, id, now).role === "admin"; } catch { return false; } })) throw new Fault(403, "admin_required");
 }
-export function approvalStillValid(a: EnrollmentAccount, r: PairingRecord, grants: SignedGrant[], now: number): void {
+export function approvalStillValid(a: EnrollmentAccount, r: Pick<PairingRecord, "context">, grants: SignedGrant[], now: number): void {
   const c = r.context;
   device(a, c.approverDeviceId);
   const d = own(a.devices, c.approverDeviceId)!;
@@ -127,6 +128,7 @@ export class EnrollmentService {
     bytes(proposal.signingPublicKey, 32); bytes(proposal.receivingPublicKey, 32);
     if (proposal.deviceId === proposal.approverDeviceId || proposal.signingPublicKey === proposal.receivingPublicKey) throw new Fault(400, "pairing_identity_invalid");
     return this.authorized(accountId, auth, (a, now, hash) => {
+      if(DAGRequired(a as RecoveryDAGAccount))throw new Fault(426,"protocol_upgrade_required");
       if (!a.trustRoot) throw new Fault(409, "trust_root_required");
       if (version === "1" && proposal.approverDeviceId !== a.trustRoot.rootDeviceId) throw new Fault(403, "issuer_proof_capability_required");
       device(a, proposal.approverDeviceId);
@@ -158,6 +160,7 @@ export class EnrollmentService {
   private async pairing<T>(accountId: string, auth: LoginAuth & { deviceId?: string }, key: string, operation: (a: EnrollmentAccount, r: PairingRecord, side: "initiator" | "approver", now: number) => T, version: "1" | "2" | "3" | "4" = "1"): Promise<T> {
     identifier(key); if (auth.deviceId) identifier(auth.deviceId);
     return this.authorized(accountId, auth, (a, now, hash) => {
+      if(DAGRequired(a as RecoveryDAGAccount))throw new Fault(426,"protocol_upgrade_required");
       const r = own(a.pairingSessions, key);
       if (!r || (r.certificateVersion ?? "1") !== version || r.context.accountGeneration !== a.generation) throw new Fault(404, "pairing_not_found");
       let side: "initiator" | "approver";
@@ -278,7 +281,7 @@ export class EnrollmentService {
     }, version);
   }
 }
-export function relayFields(r: PairingRecord, value: Pick<Relay, "side" | "kind" | "payload">): string[] {
+export function relayFields(r: Pick<PairingRecord, "context">, value: Pick<Relay, "side" | "kind" | "payload">): string[] {
   const c = r.context;
   return ["harmonia/pairing-relay/v1", c.accountId, c.accountGeneration, c.sessionId, c.challengeNonce, value.side, value.kind, value.payload];
 }

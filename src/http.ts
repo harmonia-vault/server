@@ -1,3 +1,6 @@
+import { protocolInfoResponse, requestProtocolMajor, withProtocolMajor } from './protocol-info.js';
+import { dagEnrollmentRoute } from './http-dag-enrollment.js';
+import { recoveryDAGRoute } from './http-recovery-dag.js';
 import { pendingPairingsRoute } from "./http-pending-pairings.js";
 import { instanceInfo } from "./registration.js";
 import { recoveryAuthorityRoute } from "./http-recovery-authority.js";
@@ -10,7 +13,7 @@ import { NotificationAuthority } from "./notifications.js";
 import { environmentRoute } from "./http-environments.js";
 import { grantManagementRoute } from "./http-grant-management.js";
 export function bodyLimit(method: string, pathname: string): number {
-  if(method==="POST"&&/^\/v1\/accounts\/[A-Za-z0-9._:-]+\/(?:recovery-authority-transitions|recovered-devices|pairings-v4\/[A-Za-z0-9._:-]+\/approve)$/.test(pathname))return 2*1024*1024;
+  if(method==="POST"&&/^\/v1\/accounts\/[A-Za-z0-9._:-]+\/(?:recovery-authority-transitions(?:-v2)?|recovered-devices(?:-v2)?|pairings-v[45]\/[A-Za-z0-9._:-]+\/approve)$/.test(pathname))return 2*1024*1024;
   if (method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/pairings-v3\/[A-Za-z0-9._:-]+\/approve$/.test(pathname)) return 1_000_000;
   if (method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/pairings-v2\/[A-Za-z0-9._:-]+\/approve$/.test(pathname)) return 262144;
   return method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/environment-changes(?:-v[23])?$/.test(pathname) ? 1_000_000 : 100_000;
@@ -37,11 +40,12 @@ export function requestAuth(request: Request): Auth {
   return { token, deviceId, accountGeneration };
 }
 function objectMember(value: unknown): void { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Fault(400, "object_required"); }
-export async function route(request: Request, service: VaultService): Promise<Response> {
+async function routeSelected(request: Request, service: VaultService): Promise<Response> {
   try {
     const url = new URL(request.url);
     if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Fault(400, "https_required");
     let result: unknown;
+    if (url.pathname === "/protocol-info") return protocolInfoResponse(request);
     if (url.pathname === "/instance-info") {
       if (request.method !== "GET") throw new Fault(405, "method_not_allowed");
       if (url.search) throw new Fault(400, "query_forbidden");
@@ -52,6 +56,10 @@ export async function route(request: Request, service: VaultService): Promise<Re
       if (typeof b.email !== "string" || typeof b.credential !== "string") throw new Fault(400, "login_input_invalid");
       result = url.pathname.endsWith("register") ? await service.register(b.email, b.credential) : await service.login(b.email, b.credential);
     } else {
+      const pairing5=await dagEnrollmentRoute(request,service.store);
+      if(pairing5.handled)return Response.json(pairing5.result,{headers:{'cache-control':'no-store','x-content-type-options':'nosniff'}});
+      const dag = await recoveryDAGRoute(request, service.store);
+      if(dag.handled)return Response.json(dag.result,{headers:{'cache-control':'no-store','x-content-type-options':'nosniff'}});
       const account = await accountRoute(request, service.accountLifecycle());
       if (account.handled) return Response.json(account.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
       const pending = await pendingPairingsRoute(request, service.store);
@@ -108,4 +116,11 @@ export async function route(request: Request, service: VaultService): Promise<Re
     // No request, token, password-equivalent credential or ciphertext is logged.
     return Response.json({ error: fault.code }, { status: fault.status, headers: { "cache-control": "no-store" } });
   }
+}
+
+export async function route(request:Request,service:VaultService):Promise<Response>{
+ let major:1|2=1;
+ try{const u=new URL(request.url);major=requestProtocolMajor(request,u.searchParams.get('capability')==='issuer-recovery-dag-v1'||/\/(?:recovery-authority-(?:challenges|transitions)-v2|recovered-(?:device-challenges|devices)-v2|recovery-vault-v2|pairings-v5)(?:\/|$)/.test(u.pathname));}
+ catch(error){const f=error instanceof Fault?error:new Fault(500,'internal_error');return withProtocolMajor(Response.json({error:f.code},{status:f.status,headers:{'cache-control':'no-store'}}),major);}
+ return withProtocolMajor(await routeSelected(request,service),major);
 }

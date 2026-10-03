@@ -1,3 +1,4 @@
+import { protocolInfoResponse, requestProtocolMajor, withProtocolMajor, protocolMajorHeader } from './protocol-info.js';
 import { SqlRegistrationAuthority, instanceInfo, registrationComplete, type RegistrationAuthority, type RegistrationAdmission, type RegistrationState } from "./registration.js";
 import { DurableObject } from "cloudflare:workers";
 import { SqlStore, type Sql } from "./store.js";
@@ -108,11 +109,11 @@ export class AccountVault extends DurableObject<Env> {
   }
   // 没有直接种入可信设备或绕过邮件证明的重置 RPC；全部业务经统一路由校验。
 }
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+async function workerFetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
       if (url.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) throw new Fault(400, "https_required");
+      if(url.pathname==="/protocol-info")return protocolInfoResponse(request);
       if (url.pathname === "/instance-info") {
         if (request.method !== "GET") throw new Fault(405, "method_not_allowed");
         if (url.search) throw new Fault(400, "query_forbidden");
@@ -129,7 +130,7 @@ export default {
           if (length > bodyLimit(request.method, url.pathname)) { await reader.cancel(); throw new Fault(413, "body_too_large"); } chunks.push(p.value); } }
         finally { reader.releaseLock(); }
         const raw=Buffer.concat(chunks);
-        if(/^\/v1\/accounts\/[^/]+\/(recovery-authority-|recovered-|pairings-v4)/.test(url.pathname)){
+        if(/^\/v1\/accounts\/[^/]+\/(recovery-authority-|recovered-|pairings-v[45])/.test(url.pathname)){
           try{payload=new TextDecoder("utf-8",{fatal:true}).decode(raw);}catch{throw new Fault(400,"json_invalid");}
         }else payload=raw.toString("utf8");
       }
@@ -176,5 +177,11 @@ export default {
       const fault = error instanceof Fault ? error : new Fault(500, "internal_error");
       return Response.json({ error: fault.code }, { status: fault.status, headers: { "cache-control": "no-store" } });
     }
-  },
-} satisfies ExportedHandler<Env>;
+}
+export default { async fetch(request:Request,env:Env):Promise<Response>{
+ let major:1|2=1;
+ try{major=requestProtocolMajor(request);const response=await workerFetch(request,env);
+ if(response.status===101){const headers=new Headers(response.headers);headers.set(protocolMajorHeader,String(major));return new Response(null,{status:101,headers,webSocket:response.webSocket!});}
+ return withProtocolMajor(response,major);
+ }catch(error){const f=error instanceof Fault?error:new Fault(500,"internal_error");return withProtocolMajor(Response.json({error:f.code},{status:f.status,headers:{"cache-control":"no-store"}}),major);}
+} } satisfies ExportedHandler<Env>;

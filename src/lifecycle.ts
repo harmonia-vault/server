@@ -1,3 +1,4 @@
+import { DAGRequired, type RecoveryDAGAccount } from './recovery-dag-account.js';
 import { originalInitialization } from "./initialization-evidence.js";
 import { recoveryEnvelopeCapability, recoveryEnvelopeEvidence } from "./recovery-envelope-evidence.js";
 import { buildRecoveryIssuerEvidence, issuerOriginCapability } from "./issuer-origin.js";
@@ -103,7 +104,7 @@ export class LifecycleService {
     identifier(accountId); generation(auth.accountGeneration); bytes(auth.token, 32); if (auth.deviceId) identifier(auth.deviceId);
     const hash = await tokenHash(auth.token);
     return this.store.transaction(accountId, account => {
-      const now = this.clock(); sameAccount(account, auth.accountGeneration); recoveryInitialized(account); const current = actor(account, auth, hash, now);
+      const now = this.clock(); sameAccount(account, auth.accountGeneration); recoveryInitialized(account); const current = actor(account, auth, hash, now); if(DAGRequired(account as RecoveryDAGAccount))throw new Fault(426,"protocol_upgrade_required");
       return operation(account, now, hash, current);
     });
   }

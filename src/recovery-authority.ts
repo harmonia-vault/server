@@ -1,3 +1,4 @@
+import { DAGRequired, type RecoveryDAGAccount } from './recovery-dag-account.js';
 import { Fault, grantKey, type Session } from "./model.js";
 import { bytes, generation, identifier, verify } from "./protocol.js";
 import { canonical, exact, own, type EnrollmentAccount } from "./enrollment-wire.js";
@@ -108,7 +109,7 @@ export class RecoveryAuthorityService {
         if (auth.deviceId)
             identifier(auth.deviceId);
         const hash = await tokenHash(auth.token);
-        return this.store.transaction(id, account => { const a = account as RecoveryAuthorityAccount, now = this.clock(), s = currentActor(a, auth, hash, now); return fn(a, s, hash, now); });
+        return this.store.transaction(id, account => { const a = account as RecoveryAuthorityAccount, now = this.clock(), s = currentActor(a, auth, hash, now); if(DAGRequired(a as RecoveryDAGAccount))throw new Fault(426,"protocol_upgrade_required"); return fn(a, s, hash, now); });
     }
     async challenge(id: string, auth: RecoveryAuth, input: {
         operationId: string;

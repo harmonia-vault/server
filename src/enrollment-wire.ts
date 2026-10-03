@@ -75,7 +75,7 @@ export function pairingContextFields(c: PairingContext): string[] {
   return ["harmonia/pairing-context/v1", pairingProfile, c.accountId, c.accountGeneration, c.purpose, c.sessionId, c.challengeNonce, c.expiresAt,
     c.initiatorDeviceId, c.initiatorSigningPublicKey, c.initiatorReceivingPublicKey, c.approverDeviceId, c.approverSigningPublicKey, c.approverReceivingPublicKey];
 }
-export function transcriptHash(record: PairingRecord): string {
+export function transcriptHash(record: Pick<PairingRecord, "context" | "messages" | "confirmations">): string {
   const a = record.messages.initiator, b = record.messages.approver;
   if (!a || !b || !record.confirmations.initiator || !record.confirmations.approver) throw new Fault(409, "pairing_confirmation_required");
   return hash(["harmonia/pairing-transcript/v1", Buffer.from(canonical(pairingContextFields(record.context))).toString("base64url"), a, b]);
