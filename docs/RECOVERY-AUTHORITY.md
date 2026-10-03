@@ -37,7 +37,7 @@
 
 旧 v1 新钥持有签名只承诺封套，不证明原恢复来源授权。若旧路径导致恢复代际与连续链尾不一致，old-recovery 和新 capability vault 失败关闭；仅当前全部环境 Admin 可显式 manager-reanchor，签入完整旧状态、已接受十三项旧轮换记录、当前签权与新公钥。原根设备和初始 genesis 不移动。旧记录缺材料时不补造签名；全部管理设备已丢失且只有这种旧断链时，此新能力不能自动找回管理权。
 
-本切片过渡和恢复登记包内 issuerEvidence 仍限定 proof2，因此恢复设备未来发起另一轮 ALL Admin 过渡、或它新增环境之后再次恢复，需要后续显式支持内嵌 proof3 union；目前相应路线失败关闭。既有管理控制投影与环境提交仍沿各自已发布 capability，未宣称所有高层手机管理入口已接新来源。
+本切片过渡和恢复登记包内 issuerEvidence 仍限定 proof2，因此恢复设备未来发起另一轮 ALL Admin 过渡、或它新增环境之后再次恢复，需要后续显式支持内嵌 proof3 union；目前相应路线失败关闭。既有 Proof2 控制接口保持原 capability；后续显式 Proof3 控制与独立环境 v3 提交已接入恢复设备管理，见 [恢复设备管理](RECOVERED-MANAGEMENT.md)。完整手机高层流程仍须独立验收。
 
 新 transition、recovered-device 提交和 v4 approve 专用请求体上限 2 MiB，拒绝重复 JSON 成员、非法 UTF-8、深度超过 64、多余字段及尾随数据。其他旧入口上限不扩大。账号持久文档仍是 1 MB，包含完整历史与幂等材料；图和记录有明确节点/清单边界，超限拒绝，没有无限历史或线上容量承诺。
 

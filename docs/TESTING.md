@@ -99,3 +99,14 @@ MIT 源码可审阅，不应将以上局部通过描述为生产安全验收。
 中间失败保留：reset 测试夹具仅改账号代际而保留旧根签名，被持久化不变量拒绝；改成完整合成重置后通过。另一组 F 接收钥误复用原根公钥，服务以 pairing_identity_invalid 拒绝，换独立合成 X25519 钥后通过；没有放宽签名、公钥用途或客户端校验。
 
 本批 HTTP 封套为合成结构输入，静态向量包含真实已冻结密码学封套；尚不把服务定向测试记成完整真实 PAKE/HPKE/手机强认证/恢复码回填/受保护落盘用户链。相关 Go/原生联合验收由父任务独立记录。没有重跑 Docker smoke/Wrangler dry-run，没有部署、发布或 CI。内嵌恢复 actor proof3 union、所有手机高层管理入口仍按 [范围限制](RECOVERY-AUTHORITY.md) 失败关闭。
+
+
+## 后续恢复设备环境与授权管理第1层
+
+本节独立于 b968223 的 178 项公开基线，保留固定记录。2026-10-03 01:49 UTC 查验 `mise run check` 最终 183/183 通过，0 失败、0 跳过、0 取消；typecheck 与生产 build 通过。任务总时长 19.52 秒，测试约 19.07 秒。本地 workerd Argon2id 64 MiB/3 次首次登录约 1694 ms，仅为本地测量。日志在本机 `/tmp/harmonia-recovered-management-fullcheck.log`。
+
+新增 `test/recovered-management.test.ts` 定向 5/5 通过，约 8.72 秒：真实 Node TCP/workerd HTTP 中，全部旧设备撤销→连续轮换→显式恢复 E→v4 入网 F；E 创建 Z、从完整归档绑定尚未获 Z 授权的 F、授 RW、F 写值和拉取、授 Admin、F 新建 W/轮换 Z；完整两签原摘要、同 ID 状态/重试及事务尾序号；原接口 rename/delete。还核验 none 只作历史来源、当前来源环境降权后拒绝旧提交、旧能力不能接受恢复身份、缺未授权设备档案拒绝、SQL UPDATE 失败全笔回滚，以及 v2 原包跨 v3 返回原接受序号而不形成新写。
+
+初跑 3/5，两个失败是测试将 Z 降权却期待仍有 Y Admin 的 E 重试原 Y→Z 创建时被拒绝；当前请求正确检查创建来源 Y。修正测试为对实际来源 Y 降权后 5/5 通过，未放宽当前权限或签名规则。该切片没有新增密码学域、改变旧 Proof2 parser、把 none 当权限或从目录信任公钥。
+
+控制响应保留既定 Proof3 验证所必需的已签初始化/transition/recovered 内嵌 HPKE 材料，但不新增独立恢复 vault 封套列表，也不含业务标签、变量名、业务数据密文、原 token 或私钥。结构封套和值包仍是合成输入，真实 Go HPKE/PAKE 与完整手机用户链由后续独立验收记录；此处不提前称其通过。下一次恢复所需的平坦 source union/DAG 尚未接入，不混入本次结果。没有重跑 Docker smoke/Wrangler dry-run，未部署、发布或加入 CI。合同见 [恢复设备管理](RECOVERED-MANAGEMENT.md)。

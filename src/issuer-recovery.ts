@@ -445,7 +445,7 @@ export function verifyAcceptedIssuerRecoveryEvidence(a: RecoveryAuthorityAccount
     }
     return graph;
 }
-export function buildIssuerRecoveryEvidence(a: RecoveryAuthorityAccount, deviceId: string, sources: SignedGrant[], targets: SignedGrant[] = sources): IssuerRecoveryProof | null {
+export function buildIssuerRecoveryEvidence(a: RecoveryAuthorityAccount, deviceId: string, sources: SignedGrant[], targets: SignedGrant[] = sources, identityIds: string[] = []): IssuerRecoveryProof | null {
     if (!sources.length)
         return null;
     const initialization = originalInitialization(a);
@@ -534,6 +534,9 @@ export function buildIssuerRecoveryEvidence(a: RecoveryAuthorityAccount, deviceI
         }
     }
     const path = identityPath(deviceId);
+    // 未获本环境授权的既有设备也须通过完整受签归档绑定，不能从目录建立公钥信任。
+    for (const id of identityIds)
+        identityPath(id);
     for (const signed of sources)
         source(signed);
     let processed = 0;

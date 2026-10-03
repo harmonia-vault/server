@@ -1,3 +1,5 @@
+import { buildIssuerRecoveryEvidence, verifyIssuerRecoveryGraph, type IssuerRecoveryProof } from "./issuer-recovery.js";
+import type { RecoveryAuthorityAccount } from "./recovery-authority.js";
 import { buildIssuerEvidence, verifyIssuerOriginGraph, type IssuerOriginProof } from "./issuer-origin.js";
 import { deviceRevocationBytes } from "./environments.js";
 import { own, type EnrollmentAccount } from "./enrollment-wire.js";
@@ -15,6 +17,9 @@ export interface ManagementSubject {
 export interface ManagementControl {
   accountId: string; accountGeneration: string; environmentId: string; sequence: number; keyVersion: string;
   subjects: ManagementSubject[]; issuerEvidence: IssuerOriginProof;
+}
+export interface ManagementControlRecovery extends Omit<ManagementControl, "issuerEvidence"> {
+  issuerEvidence: IssuerRecoveryProof;
 }
 /** 仅提供已接受授权的管理投影与本人操作回执，不建立新设备信任。 */
 export class GrantManagementService {
@@ -48,6 +53,12 @@ export class GrantManagementService {
     return { idempotencyKey, accepted: true, sequence: record.sequence, contentHash: await tokenHash(record.content) };
   }
   async control(accountId: string, auth: Auth, environmentId: string): Promise<ManagementControl> {
+    return this.controlWithProfile(accountId, auth, environmentId, "origin") as Promise<ManagementControl>;
+  }
+  async controlRecovery(accountId: string, auth: Auth, environmentId: string): Promise<ManagementControlRecovery> {
+    return this.controlWithProfile(accountId, auth, environmentId, "recovery") as Promise<ManagementControlRecovery>;
+  }
+  private async controlWithProfile(accountId: string, auth: Auth, environmentId: string, profile: "origin" | "recovery") {
     identifier(environmentId);
     return this.authenticated(accountId, auth, (account, now) => {
       if (permission(account, auth.deviceId, environmentId, now).role !== "admin") throw new Fault(403, "admin_required");
@@ -81,9 +92,12 @@ export class GrantManagementService {
         return { deviceId: subject.id, signingPublicKey: subject.signingPublicKey, receivingPublicKey: subject.receivingPublicKey,
           currentGrant: grant ? structuredClone(grant) : null, highestGrantGeneration: String(highest) };
       });
-      const issuerEvidence = buildIssuerEvidence(account, auth.deviceId, sources, [current], subjects.map(subject => subject.deviceId));
+      const identityIds = subjects.map(subject => subject.deviceId);
+      const issuerEvidence = profile === "recovery"
+        ? buildIssuerRecoveryEvidence(account as RecoveryAuthorityAccount, auth.deviceId, sources, [current], identityIds)
+        : buildIssuerEvidence(account, auth.deviceId, sources, [current], identityIds);
       if (!issuerEvidence) throw new Fault(403, "issuer_origin_invalid");
-      const graph = verifyIssuerOriginGraph(issuerEvidence);
+      const graph = profile === "recovery" ? verifyIssuerRecoveryGraph(issuerEvidence as IssuerRecoveryProof) : verifyIssuerOriginGraph(issuerEvidence as IssuerOriginProof);
       for (const subject of subjects) {
         const identity = graph.identities.get(subject.deviceId);
         if (!identity || identity.signing !== subject.signingPublicKey || identity.receiving !== subject.receivingPublicKey) throw new Fault(403, "issuer_archive_mismatch");

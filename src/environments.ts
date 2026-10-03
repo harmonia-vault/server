@@ -1,3 +1,5 @@
+import { buildIssuerRecoveryEvidence, type IssuerRecoveryProof } from "./issuer-recovery.js";
+import type { RecoveryAuthorityAccount } from "./recovery-authority.js";
 import { buildIssuerEvidence, type IssuerOriginProof } from "./issuer-origin.js";
 import { environmentChangeHash, environmentOriginBytes, environmentOriginHash, environmentRights, rightsFields, type SignedEnvironmentOrigin } from "./environment-origin.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -131,12 +133,20 @@ export class EnvironmentService {
     });
   }
   async control(accountId: string, auth: Auth, environmentId: string): Promise<{ sequence: number; grants: SignedGrant[]; issuerEvidence: IssuerOriginProof }> {
+    return this.controlWithProfile(accountId, auth, environmentId, "origin") as Promise<{ sequence: number; grants: SignedGrant[]; issuerEvidence: IssuerOriginProof }>;
+  }
+  async controlRecovery(accountId: string, auth: Auth, environmentId: string): Promise<{ sequence: number; grants: SignedGrant[]; issuerEvidence: IssuerRecoveryProof }> {
+    return this.controlWithProfile(accountId, auth, environmentId, "recovery") as Promise<{ sequence: number; grants: SignedGrant[]; issuerEvidence: IssuerRecoveryProof }>;
+  }
+  private async controlWithProfile(accountId: string, auth: Auth, environmentId: string, profile: "origin" | "recovery") {
     identifier(environmentId);
     return this.authenticated(accountId, auth, (account, now) => {
       if (permission(account, auth.deviceId, environmentId, now).role !== "admin") throw new Fault(403, "admin_required");
       const grants = Object.values(account.grants).filter(grant => grant.grant.environmentId === environmentId && active(grant, account, now));
       const current = account.grants[grantKey(environmentId, auth.deviceId)]!;
-      const issuerEvidence = buildIssuerEvidence(account, auth.deviceId, grants, [current]);
+      const issuerEvidence = profile === "recovery"
+        ? buildIssuerRecoveryEvidence(account as RecoveryAuthorityAccount, auth.deviceId, grants, [current])
+        : buildIssuerEvidence(account, auth.deviceId, grants, [current]);
       if (!issuerEvidence) throw new Fault(403, "issuer_origin_invalid");
       return structuredClone({ sequence: account.sequence, grants, issuerEvidence });
     });
@@ -160,7 +170,13 @@ export class EnvironmentService {
     environmentOriginBytes(signed.origin.origin); bytes(signed.origin.signature, 64);
     return this.applyChange(accountId, auth, { change: signed.change, signature: signed.signature }, signed.origin);
   }
-  private async applyChange(accountId: string, auth: Auth, signed: SignedEnvironmentChange, origin?: SignedEnvironmentOrigin): Promise<{ sequence: number; replayed: boolean }> {
+  async changeV3(accountId: string, auth: Auth, signed: SignedEnvironmentChangeV2): Promise<{ sequence: number; replayed: boolean }> {
+    exact(signed, ["change", "signature", "origin"]);
+    exact(signed.origin, ["origin", "signature"]);
+    environmentOriginBytes(signed.origin.origin); bytes(signed.origin.signature, 64);
+    return this.applyChange(accountId, auth, { change: signed.change, signature: signed.signature }, signed.origin, "recovery");
+  }
+  private async applyChange(accountId: string, auth: Auth, signed: SignedEnvironmentChange, origin?: SignedEnvironmentOrigin, profile: "origin" | "recovery" = "origin"): Promise<{ sequence: number; replayed: boolean }> {
     const encoded = environmentChangeBytes(signed.change); bytes(signed.signature, 64);
     return this.authenticated(accountId, auth, (a, now) => {
       const c = signed.change;
@@ -170,7 +186,11 @@ export class EnvironmentService {
       const authority = permission(a, auth.deviceId, c.authorityEnvironmentId, now);
       if (authority.role !== "admin") throw new Fault(403, "admin_required");
       // 新来源提交也必须能追溯到原双签初始化；旧接口行为保持原样。
-      if (origin) buildIssuerEvidence(a, auth.deviceId, [a.grants[grantKey(c.authorityEnvironmentId, auth.deviceId)]!]);
+      if (origin) {
+        const source = a.grants[grantKey(c.authorityEnvironmentId, auth.deviceId)]!;
+        if (profile === "recovery") buildIssuerRecoveryEvidence(a as RecoveryAuthorityAccount, auth.deviceId, [source]);
+        else buildIssuerEvidence(a, auth.deviceId, [source]);
+      }
       if (old) { if (old.content !== wire) throw new Fault(409, "idempotency_conflict"); return { sequence: old.sequence, replayed: true }; }
       if (authority.keyVersion !== c.authorityKeyVersion || authority.grantGeneration !== c.authorityGrantGeneration) throw new Fault(403, "grant_stale");
       if (c.expectedSequence !== String(a.sequence)) throw new Fault(409, "environment_snapshot_stale");
