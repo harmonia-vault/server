@@ -5,6 +5,7 @@ import { lifecycleRoute } from "./http-lifecycle.js";
 import { enrollmentRoute } from "./http-enrollment.js";
 import { NotificationAuthority } from "./notifications.js";
 import { environmentRoute } from "./http-environments.js";
+import { grantManagementRoute } from "./http-grant-management.js";
 export function bodyLimit(method: string, pathname: string): number {
   if (method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/pairings-v3\/[A-Za-z0-9._:-]+\/approve$/.test(pathname)) return 1_000_000;
   if (method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/pairings-v2\/[A-Za-z0-9._:-]+\/approve$/.test(pathname)) return 262144;
@@ -49,6 +50,8 @@ export async function route(request: Request, service: VaultService): Promise<Re
       if (enrollment.handled) return Response.json(enrollment.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
       const environment = await environmentRoute(request, service.store);
       if (environment.handled) return Response.json(environment.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+      const management = await grantManagementRoute(request, service.store);
+      if (management.handled) return Response.json(management.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
       const lifecycle = await lifecycleRoute(request, service.store);
       if (lifecycle.handled) return Response.json(lifecycle.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
       const match = url.pathname.match(/^\/v1\/accounts\/([A-Za-z0-9._:-]+)\/(pull|mutations|mutation-status|grants|device-challenges|device-sessions|notification-tickets)$/);

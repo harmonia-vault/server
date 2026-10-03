@@ -298,8 +298,8 @@ export function issuerOriginStillCurrent(account: EnrollmentAccount, certificate
   }
 }
 
-/** 仅按当前可读目标构造控制面依赖闭包；返回候选不能替代客户端已保护的根 pin。 */
-export function buildIssuerEvidence(account: EnrollmentAccount, deviceId: string, grants: SignedGrant[], targets: SignedGrant[] = grants): IssuerOriginProof | null {
+/** 按显式控制目标与必要历史身份构造依赖闭包；候选不能替代客户端已保护的根 pin。 */
+export function buildIssuerEvidence(account: EnrollmentAccount, deviceId: string, grants: SignedGrant[], targets: SignedGrant[] = grants, identityIds: string[] = []): IssuerOriginProof | null {
   if (!grants.length) return null;
   const root = account.trustRoot; if (!root) fail("trust_root_required");
   const initial = initialAuthorityHashes(account);
@@ -347,6 +347,7 @@ export function buildIssuerEvidence(account: EnrollmentAccount, deviceId: string
     }
   }
   const path = identityPath(deviceId);
+  for (const id of identityIds) identityPath(id);
   for (const grant of grants) source(grant);
   // 身份归档里的全部受签授权同样需要闭包。新增身份可能增加分支，迭代直到收敛。
   let processed = 0;
