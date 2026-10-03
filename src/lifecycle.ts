@@ -3,6 +3,7 @@ import { originalInitialization } from "./initialization-evidence.js";
 import { recoveryEnvelopeCapability, recoveryEnvelopeEvidence } from "./recovery-envelope-evidence.js";
 import { buildRecoveryIssuerEvidence, issuerOriginCapability } from "./issuer-origin.js";
 import type { Account, Auth, Session } from "./model.js";
+import { assertRecoveryOperationOpen, assertRecoveryOperationCapacity } from "./recovery-operation-guards.js";
 import { Fault } from "./model.js";
 import { bytes, generation, identifier, verify } from "./protocol.js";
 import type { Store } from "./store.js";
@@ -126,6 +127,7 @@ export class LifecycleService {
     if (!proposal || Object.keys(proposal).sort().join("|") !== (proposal.newTrustRoot ? "envelopes|idempotencyKey|newRecoveryGeneration|newRecoveryReceivingPublicKey|newRecoverySigningPublicKey|newTrustRoot" : "envelopes|idempotencyKey|newRecoveryGeneration|newRecoveryReceivingPublicKey|newRecoverySigningPublicKey")) throw new Fault(400, "proposal_fields_invalid");
     identifier(proposal.idempotencyKey); generation(proposal.newRecoveryGeneration); bytes(proposal.newRecoverySigningPublicKey, 32); bytes(proposal.newRecoveryReceivingPublicKey, 32);
     return this.authorized(accountId, auth, (account, now, hash) => {
+      assertRecoveryOperationOpen(account,proposal.idempotencyKey,'rotation-v1');
       const manifestHash = rotationTrustHash(account, proposal);
       account.recoveryRotations ??= {};
       const old = account.recoveryRotations[proposal.idempotencyKey];
@@ -133,6 +135,7 @@ export class LifecycleService {
         if (old.sessionHash !== hash || old.proposal.newRecoveryGeneration !== proposal.newRecoveryGeneration || old.proposal.newRecoverySigningPublicKey !== proposal.newRecoverySigningPublicKey || old.proposal.newRecoveryReceivingPublicKey !== proposal.newRecoveryReceivingPublicKey || old.envelopesHash !== fullEnvelopes(account, proposal.envelopes) || old.trustRootHash !== manifestHash) throw new Fault(409, "idempotency_conflict");
         return view(accountId, old, now, account.recoveryGeneration);
       }
+      assertRecoveryOperationCapacity(account,proposal.idempotencyKey);
       if (Object.keys(account.recoveryRotations).length >= 128) throw new Fault(503, "rotation_capacity_reached");
       if (BigInt(proposal.newRecoveryGeneration) !== BigInt(account.recoveryGeneration) + 1n) throw new Fault(409, "recovery_generation_conflict");
       if (proposal.newRecoverySigningPublicKey === account.recoverySigningPublicKey || proposal.newRecoveryReceivingPublicKey === account.recoveryReceivingPublicKey) throw new Fault(400, "recovery_key_unchanged");
@@ -147,6 +150,7 @@ export class LifecycleService {
   async completeRotation(accountId: string, auth: RecoveryAuth, idempotencyKey: string, challengeId: string, signature: string): Promise<Record<string, unknown>> {
     identifier(idempotencyKey); identifier(challengeId); bytes(signature, 64);
     return this.authorized(accountId, auth, (account, now, hash, current) => {
+      assertRecoveryOperationOpen(account,idempotencyKey,'rotation-v1');
       const record = account.recoveryRotations?.[idempotencyKey];
       if (!record || record.sessionHash !== hash || record.id !== challengeId || record.generation !== account.generation) throw new Fault(403, "challenge_invalid");
       if (record.state === "complete") {

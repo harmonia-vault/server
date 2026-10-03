@@ -1,3 +1,4 @@
+import { validateRecoveryOperationClosures } from "./recovery-operation-guards.js";
 import type { Account } from "./model.js";
 import { Fault } from "./model.js";
 import { SqlRegistrationAuthority, validateRegistration, registrationVerificationRequired, type RegistrationAuthority } from "./registration.js";
@@ -22,6 +23,7 @@ export class SqlStore implements Store {
   private readonly listeners = new Set<(accountId: string) => void>();
   onCommit(listener: (accountId: string) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private document(account: Account): string {
+    validateRecoveryOperationClosures(account);
     validateRegistration(account);
     account.verificationRequiredAtRegistration ??= false;
     validateRecoveryState(account);
@@ -44,7 +46,10 @@ export class SqlStore implements Store {
   }
   read(accountId: string): Account | undefined {
     const row = this.sql.rows("SELECT data FROM accounts WHERE id=?", [accountId])[0];
-    return row ? JSON.parse(String(row.data)) as Account : undefined;
+    if (!row) return undefined;
+    const account = JSON.parse(String(row.data)) as Account;
+    validateRecoveryOperationClosures(account);
+    return account;
   }
   transaction<T>(accountId: string, operation: (account: Account) => T): T {
     let changed = false;

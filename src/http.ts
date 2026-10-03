@@ -1,3 +1,4 @@
+import { recoveryOperationResolutionRoute } from "./http-recovery-operation-resolution.js";
 import { protocolInfoResponse, requestProtocolMajor, withProtocolMajor } from './protocol-info.js';
 import { dagEnrollmentRoute } from './http-dag-enrollment.js';
 import { recoveryDAGRoute } from './http-recovery-dag.js';
@@ -13,6 +14,7 @@ import { NotificationAuthority } from "./notifications.js";
 import { environmentRoute } from "./http-environments.js";
 import { grantManagementRoute } from "./http-grant-management.js";
 export function bodyLimit(method: string, pathname: string): number {
+  if (method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/recovery-operation-resolutions-v1$/.test(pathname)) return 8192;
   if(method==="POST"&&/^\/v1\/accounts\/[A-Za-z0-9._:-]+\/(?:recovery-authority-transitions(?:-v2)?|recovered-devices(?:-v2)?|pairings-v[45]\/[A-Za-z0-9._:-]+\/approve)$/.test(pathname))return 2*1024*1024;
   if (method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/pairings-v3\/[A-Za-z0-9._:-]+\/approve$/.test(pathname)) return 1_000_000;
   if (method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/pairings-v2\/[A-Za-z0-9._:-]+\/approve$/.test(pathname)) return 262144;
@@ -58,6 +60,8 @@ async function routeSelected(request: Request, service: VaultService): Promise<R
     } else {
       const pairing5=await dagEnrollmentRoute(request,service.store);
       if(pairing5.handled)return Response.json(pairing5.result,{headers:{'cache-control':'no-store','x-content-type-options':'nosniff'}});
+      const resolution = await recoveryOperationResolutionRoute(request, service.store);
+      if (resolution.handled) return Response.json(resolution.result, {headers: {"cache-control": "no-store", "x-content-type-options": "nosniff"}});
       const dag = await recoveryDAGRoute(request, service.store);
       if(dag.handled)return Response.json(dag.result,{headers:{'cache-control':'no-store','x-content-type-options':'nosniff'}});
       const account = await accountRoute(request, service.accountLifecycle());

@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { bodyLimit, requestAuth, route } from "./http.js";
 import { Fault } from "./model.js";
+import { protocolMajorHeader } from "./protocol-info.js";
 import { NotificationAuthority, notificationPath, type NotificationState } from "./notifications.js";
 import type { VaultService } from "./service.js";
 export function incomingRequest(incoming: IncomingMessage, data?: Uint8Array): Request {
@@ -32,7 +33,7 @@ export function nodeServer(service: VaultService, extra?: (request: Request) => 
       const request = incomingRequest(incoming, ["GET", "HEAD"].includes(incoming.method ?? "GET") ? undefined : Buffer.concat(chunks));
       const response = await extra?.(request) ?? await route(request, service);
       outgoing.writeHead(response.status, Object.fromEntries(response.headers)); outgoing.end(Buffer.from(await response.arrayBuffer()));
-    } catch (e) { const fault = e instanceof Fault ? e : new Fault(400, "request_invalid"); if (!outgoing.headersSent) outgoing.writeHead(fault.status, { "content-type": "application/json", "cache-control": "no-store" }); outgoing.end(JSON.stringify({ error: fault.code })); }
+    } catch (e) { const fault = e instanceof Fault ? e : new Fault(400, "request_invalid"); if (!outgoing.headersSent) outgoing.writeHead(fault.status, { "content-type": "application/json", "cache-control": "no-store", [protocolMajorHeader]: incoming.headers[protocolMajorHeader.toLowerCase()] === "2" ? "2" : "1" }); outgoing.end(JSON.stringify({ error: fault.code })); }
   });
   server.on("upgrade", (incoming, socket, head) => {
     socket.on("error", () => {});

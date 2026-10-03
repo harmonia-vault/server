@@ -1,4 +1,5 @@
 import { DAGRequired, type RecoveryDAGAccount } from './recovery-dag-account.js';
+import { assertRecoveryOperationOpen, assertRecoveryOperationCapacity } from "./recovery-operation-guards.js";
 import { Fault, grantKey, type Session } from "./model.js";
 import { bytes, generation, identifier, verify } from "./protocol.js";
 import { canonical, exact, own, type EnrollmentAccount } from "./enrollment-wire.js";
@@ -121,6 +122,7 @@ export class RecoveryAuthorityService {
         if (!["old-recovery", "all-environments-admin"].includes(input.authorizationKind) || !["continuous", "manager-reanchor"].includes(input.chainMode))
             throw new Fault(400, "fields_invalid");
         return this.authenticated(id, auth, (a, s, hash, now) => {
+            assertRecoveryOperationOpen(a,input.operationId,'transition-v1');
             const h = chain(a), hasGap = gap(a, h);
             if (input.authorizationKind === "old-recovery") {
                 if (s.kind !== "recovery" || input.chainMode !== "continuous" || hasGap)
@@ -139,6 +141,7 @@ export class RecoveryAuthorityService {
                     throw new Fault(409, "idempotency_conflict");
                 return authorityView(a, prior);
             }
+            assertRecoveryOperationCapacity(a,input.operationId);
             a.recoveryAuthorityChallenges ??= {};
             if (Object.keys(a.recoveryAuthorityChallenges).length >= 128 || h.operations.has(input.operationId))
                 throw new Fault(503, "account_capacity_reached");
@@ -159,6 +162,7 @@ export class RecoveryAuthorityService {
         submissionReferences(submission);
         const t = submission.transition, contentHash = transitionHash(submission);
         return this.authenticated(id, auth, (a, s, hash, now) => {
+            assertRecoveryOperationOpen(a,t.operationId,'transition-v1');
             const prior = (a.recoveryAuthorityTransitions ?? []).find(r => r.submission.transition.operationId === t.operationId);
             if (prior) {
                 if (prior.submission.transition.sessionHash !== hash || transitionHash(prior.submission) !== contentHash)
@@ -237,6 +241,7 @@ export class RecoveryAuthorityService {
         bytes(input.deviceSigningPublicKey, 32);
         bytes(input.deviceReceivingPublicKey, 32);
         return this.authenticated(id, auth, (a, s, hash, now) => {
+            assertRecoveryOperationOpen(a,input.operationId,'recovered-v1');
             const h = chain(a);
             if (s.kind !== "recovery" || s.rotationRequired !== false || gap(a, h) || !(a.recoveryAuthorityTransitions?.length))
                 throw new Fault(403, "recovery_rotation_required");
@@ -249,6 +254,7 @@ export class RecoveryAuthorityService {
             if (own(a.devices, input.deviceId))
                 throw new Fault(409, "device_exists");
             novelKeys(a, [input.deviceSigningPublicKey, input.deviceReceivingPublicKey], h);
+            assertRecoveryOperationCapacity(a,input.operationId);
             a.recoveredDeviceChallenges ??= {};
             if (Object.keys(a.recoveredDeviceChallenges).length >= 128)
                 throw new Fault(503, "account_capacity_reached");
@@ -266,6 +272,7 @@ export class RecoveryAuthorityService {
         return this.authenticated(id, auth, (a, s, hash, now) => {
             if (s.kind !== "recovery" || s.rotationRequired !== false)
                 throw new Fault(403, "recovery_rotation_required");
+            assertRecoveryOperationOpen(a,e.operationId,'recovered-v1');
             const existing = Object.values(a.recoveredDevices ?? {}).find(r => r.submission.enrollment.operationId === e.operationId);
             if (existing) {
                 if (existing.submission.enrollment.restrictedSessionHash !== hash || recoveredDeviceHash(existing.submission) !== contentHash)

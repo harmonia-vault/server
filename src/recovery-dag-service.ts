@@ -1,3 +1,4 @@
+import { assertRecoveryOperationOpen, assertRecoveryOperationCapacity } from "./recovery-operation-guards.js";
 import { Fault, grantKey, type Session } from './model.js';
 import { bytes, generation, identifier } from './protocol.js';
 import { canonical, exact, own, hash } from './enrollment-wire.js';
@@ -64,10 +65,12 @@ export class RecoveryDAGService {
  async challenge(id:string,auth:RecoveryAuth,input:{operationId:string;authorizationKind:DAGAuthorityChallenge['authorizationKind'];chainMode:'continuous'}):Promise<Record<string,unknown>>{
   exact(input,['operationId','authorizationKind','chainMode']);identifier(input.operationId);if(!['old-recovery','all-environments-admin'].includes(input.authorizationKind)||input.chainMode!=='continuous')throw new Fault(400,'fields_invalid');
   return this.authorized(id,auth,(a,s,h,now)=>{
+   assertRecoveryOperationOpen(a,input.operationId,'transition-v2');
    const dag=verifiedAccountDAG(a);if(input.authorizationKind==='old-recovery'){if(s.kind!=='recovery')throw new Fault(403,'device_proof_required');}
    else{if(s.kind!=='login'||!auth.deviceId)throw new Fault(403,'device_proof_required');allAdmin(a,auth.deviceId,now);}
    const prior=own(a.recoveryDAGChallenges,input.operationId);if(prior){if(prior.sessionHash!==h||prior.authorizationKind!==input.authorizationKind)throw new Fault(409,'idempotency_conflict');return challengeView(prior);}
    if(priorOperation(a,input.operationId))throw new Fault(409,'idempotency_conflict');oldChallengeConflict(a,input.operationId,'transition');
+   assertRecoveryOperationCapacity(a,input.operationId);
    a.recoveryDAGChallenges??={};if(Object.keys(a.recoveryDAGChallenges).length>=128)throw new Fault(503,'account_capacity_reached');
    const environments=manifest(a);recoveryManifestHash(environments);let authoritySet:RecoveryAdminAuthority[]=[],issuerEvidence:RecoverySource|null=null;
    if(input.authorizationKind==='all-environments-admin'){
@@ -82,6 +85,7 @@ export class RecoveryDAGService {
  async transition(id:string,auth:RecoveryAuth,command:RecoveryTransitionCommandV2):Promise<Record<string,unknown>>{
   exact(command,['submission','dependencyBundle']);transitionReferencesV2(command.submission);const s=command.submission,t=s.transition,contentHash=transitionHashV2(s);
   return this.authorized(id,auth,(a,actor,h,now)=>{
+   assertRecoveryOperationOpen(a,t.operationId,'transition-v2');
    const c=own(a.recoveryDAGChallenges,t.operationId),prior=priorOperation(a,t.operationId);
    if(prior){if(prior.kind!=='transition-v2'||recordRow(prior)[1]!==contentHash||!c||c.sessionHash!==h||bundleContent(command.dependencyBundle)!==bundleContent(c.dependencyBundle))throw new Fault(409,'idempotency_conflict');return {sequence:prior.record.sequence,replayed:true,transitionHash:contentHash,contentHash};}
    const dag=verifiedAccountDAG(a);
@@ -107,9 +111,11 @@ export class RecoveryDAGService {
  async recoveredChallenge(id:string,auth:RecoveryAuth,input:{operationId:string;deviceId:string;deviceSigningPublicKey:string;deviceReceivingPublicKey:string}):Promise<Record<string,unknown>>{
   exact(input,['operationId','deviceId','deviceSigningPublicKey','deviceReceivingPublicKey']);identifier(input.operationId);identifier(input.deviceId);bytes(input.deviceSigningPublicKey,32);bytes(input.deviceReceivingPublicKey,32);
   return this.authorized(id,auth,(a,s,h,now)=>{
+   assertRecoveryOperationOpen(a,input.operationId,'recovered-v2');
    const dag=verifiedAccountDAG(a);if(s.kind!=='recovery'||s.rotationRequired!==false||s.recoveryAuthorityHead!==dag.head.head)throw new Fault(403,'recovery_rotation_required');
    const prior=own(a.recoveredDAGChallenges,input.operationId);if(prior){if(prior.restrictedSessionHash!==h||prior.deviceId!==input.deviceId||prior.deviceSigningPublicKey!==input.deviceSigningPublicKey||prior.deviceReceivingPublicKey!==input.deviceReceivingPublicKey)throw new Fault(409,'idempotency_conflict');return challengeView(prior);}
    if(priorOperation(a,input.operationId))throw new Fault(409,'idempotency_conflict');oldChallengeConflict(a,input.operationId,'recovered');if(own(a.devices,input.deviceId))throw new Fault(409,'device_exists');novel(a,[input.deviceSigningPublicKey,input.deviceReceivingPublicKey]);
+   assertRecoveryOperationCapacity(a,input.operationId);
    a.recoveredDAGChallenges??={};if(Object.keys(a.recoveredDAGChallenges).length>=128)throw new Fault(503,'account_capacity_reached');
    const grants=recoverySources(a),proof=buildIssuerRecoveryDAGEvidence(a,a.trustRoot!.rootDeviceId,grants,recoveryTargets(a,grants));if(!proof)throw new Fault(403,'issuer_authority_unaccepted');
    const c:DAGRecoveredChallenge={...input,challengeId:crypto.randomUUID(),nonce:randomToken(),expiresAt:now+ttl,restrictedSessionHash:h,accountGeneration:a.generation,expectedSequence:String(a.sequence),recoveryGeneration:a.recoveryGeneration,recoveryTransitionHash:dag.head.head,issuerEvidence:proof.source,dependencyBundle:accountDAGBundle(a)};
@@ -119,6 +125,7 @@ export class RecoveryDAGService {
  async recoverDevice(id:string,auth:RecoveryAuth,command:RecoveredDeviceCommandV2):Promise<Record<string,unknown>>{
   exact(command,['submission','dependencyBundle']);recoveredReferencesV2(command.submission);const s=command.submission,e=s.enrollment,contentHash=recoveredDeviceHashV2(s);
   return this.authorized(id,auth,(a,actor,h,now)=>{
+   assertRecoveryOperationOpen(a,e.operationId,'recovered-v2');
    if(actor.kind!=='recovery'||actor.rotationRequired!==false)throw new Fault(403,'recovery_rotation_required');const prior=priorOperation(a,e.operationId),c=own(a.recoveredDAGChallenges,e.operationId);
    if(prior){if(prior.kind!=='recovered-v2'||recordRow(prior)[1]!==contentHash||!c||c.restrictedSessionHash!==h||bundleContent(command.dependencyBundle)!==bundleContent(c.dependencyBundle))throw new Fault(409,'idempotency_conflict');return {sequence:prior.record.sequence,replayed:true,recoveryEnrollmentHash:contentHash,contentHash};}
    const dag=verifiedAccountDAG(a);

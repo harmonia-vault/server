@@ -102,7 +102,13 @@ export class AccountVault extends DurableObject<Env> {
     const parsed = new URL(url);
     const routed = parsed.pathname.match(/^\/v1\/accounts\/([^/]+)\//)?.[1];
     if (routed && routed !== accountId) return { status: 403, headers: {}, body: '{"error":"account_binding_invalid"}' };
-    if (!this.service.store.read(accountId)) return { status: 401, headers: {}, body: '{"error":"unauthorized"}' };
+    try {
+      if (!this.service.store.read(accountId)) return { status: 401, headers: {}, body: '{"error":"unauthorized"}' };
+    } catch (error) {
+      // 在 DO 内转成固定错误响应；RPC 序列化不会保留自定义 Fault 类型。
+      const fault = error instanceof Fault ? error : new Fault(500, "internal_error");
+      return { status: fault.status, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify({ error: fault.code }) };
+    }
     const request = new Request(url, { method, headers, ...(payload === null ? {} : { body: payload }) });
     const response = await route(request, this.service);
     return { status: response.status, headers: Object.fromEntries(response.headers), body: await response.text() };
@@ -130,7 +136,7 @@ async function workerFetch(request: Request, env: Env): Promise<Response> {
           if (length > bodyLimit(request.method, url.pathname)) { await reader.cancel(); throw new Fault(413, "body_too_large"); } chunks.push(p.value); } }
         finally { reader.releaseLock(); }
         const raw=Buffer.concat(chunks);
-        if(/^\/v1\/accounts\/[^/]+\/(recovery-authority-|recovered-|pairings-v[45])/.test(url.pathname)){
+        if(/^\/v1\/accounts\/[^/]+\/(recovery-operation-resolutions-v1|recovery-authority-|recovered-|pairings-v[45])/.test(url.pathname)){
           try{payload=new TextDecoder("utf-8",{fatal:true}).decode(raw);}catch{throw new Fault(400,"json_invalid");}
         }else payload=raw.toString("utf8");
       }

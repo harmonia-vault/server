@@ -37,6 +37,7 @@ export interface Account {
   notificationTickets?: import("./notifications.js").NotificationTicket[];
   bootChallenges?: import("./lifecycle-wire.js").BootChallenge[];
   recoveryChallenges?: import("./lifecycle-wire.js").RecoveryChallenge[];
+  recoveryOperationClosures?: import("./recovery-operation-guards.js").RecoveryOperationClosures;
   recoveryRotations?: Record<string, import("./lifecycle-wire.js").RotationRecord>;
 }
 export interface Auth { token: string; deviceId: string; accountGeneration: string }
