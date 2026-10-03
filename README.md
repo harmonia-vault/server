@@ -38,7 +38,7 @@ HARMONIA_DATABASE=/tmp/harmonia-local-test/harmonia.sqlite mise exec -- pnpm sta
 
 默认仅监听 `127.0.0.1:8787`；远程明文监听被拒绝。供其他设备访问时必须由本机或共享网络命名空间内的 TLS 代理提供 HTTPS。本轮没有配置或部署代理。`HARMONIA_PORT` 可更改本地端口；`HARMONIA_DATABASE` 指向单实例持久卷数据库。
 
-注册默认关闭，要求验证邮箱默认开启。两个开关为 `HARMONIA_ALLOW_REGISTRATION` 与 `HARMONIA_REQUIRE_EMAIL_VERIFICATION`。在 Node 上显式允许注册且关闭邮箱验证时可以建立空账号；它没有可信设备，仍无法读写 vault。邮箱验证开启但未配置发送器时注册失败关闭；已配置发送器时建立未验证空账号，完成邮件证明后才能登录。Workers 以 D1 仅目录预留、每账号 DO 权威状态实现相同注册机制。关闭验证不会把邮箱标记为已验证，后续开启验证会拒绝未验证账号登录。
+普通注册默认关闭，要求新注册验证邮箱默认开启；从未完成首次注册的实例仍允许竞争首个账号，没有额外 token 或邀请。两个开关为 `HARMONIA_ALLOW_REGISTRATION` 与 `HARMONIA_REQUIRE_EMAIL_VERIFICATION`。验证要求在每个账号注册时固定：之后开启验证不锁已有未验证账号，之后关闭验证不免除原待验证要求。待验证邮箱不独占首号，完成证明后由实例权威原子决定赢家；首次标记不因 reset 或删空账号重开。公开 `GET /instance-info` 提供产品/协议与三项最小注册能力，完整合同、故障恢复和先注册再公开的顺序见 [连接与注册](docs/REGISTRATION.md)。
 
 ## API 与设备持钥证明
 
@@ -69,7 +69,7 @@ mise exec -- pnpm exec tsx tests/synthetic-server.ts
 
 `Dockerfile` 构建 Node 24 单实例服务，以非 root 用户运行，`/data` 为 SQLite 持久卷，不依赖 Cloudflare。当前服务只监听容器内 loopback，外部端口映射本身不能访问；HTTPS 代理必须共享服务网络命名空间。容器构建/运行通过与否见 [测试记录](docs/TESTING.md)。本轮没有发布镜像或部署服务。
 
-Workers 配置使用每账号 `ACCOUNTS` DO 与 `DIRECTORY` D1。数据库 ID 是占位值；不要直接部署。自动日志/trace 观测默认关闭，启用前必须验证认证头与正文脱敏。线上资源和 Argon2id 配额尚未验证；本地 workerd 结果不能代替上线验收，也不能据此降低密码参数。
+Workers 配置使用每账号 `ACCOUNTS` DO、只存首次决定的 `INSTANCES` DO 与 `DIRECTORY` D1。数据库 ID 是占位值；不要直接部署。自动日志/trace 观测默认关闭，启用前必须验证认证头与正文脱敏。线上资源和 Argon2id 配额尚未验证；本地 workerd 结果不能代替上线验收，也不能据此降低密码参数。
 
 ## 未完成的安全与产品门槛
 

@@ -1,4 +1,5 @@
 import { enrollmentV4Fields, issuerRecoveryStillCurrent, type EnrollmentApprovalV4, type IssuerRecoveryProof } from "./issuer-recovery.js";
+import { registrationVerificationRequired } from "./registration.js";
 import { recoveryAuthorityCapability } from "./recovery-authority-wire.js";
 import type { RecoveryAuthorityAccount } from "./recovery-authority.js";
 import { enrollmentV3Fields, issuerOriginCapability, issuerOriginStillCurrent, type EnrollmentApprovalV3, type IssuerOriginProof } from "./issuer-origin.js";
@@ -53,12 +54,12 @@ function requireV1Root(a: EnrollmentAccount, r: PairingRecord): void {
   if (!root || root.rootDeviceId !== c.approverDeviceId || root.rootSigningPublicKey !== c.approverSigningPublicKey || root.rootReceivingPublicKey !== c.approverReceivingPublicKey) throw new Fault(403, "issuer_proof_capability_required");
 }
 export class EnrollmentService {
-  constructor(readonly store: Store, private readonly requireVerifiedEmail = true, private readonly clock = () => Math.floor(Date.now() / 1000)) {}
+  constructor(readonly store: Store, _legacyGlobalVerification = true, private readonly clock = () => Math.floor(Date.now() / 1000)) {}
   private async authorized<T>(accountId: string, auth: LoginAuth, operation: (account: EnrollmentAccount, now: number, hash: string) => T): Promise<T> {
     identifier(accountId); generation(auth.accountGeneration); bytes(auth.token, 32); const hash = await tokenHash(auth.token);
     return this.store.transaction(accountId, raw => {
       const a = raw as EnrollmentAccount; const now = this.clock(); sameAccount(a, auth.accountGeneration); session(a, hash, now);
-      if (this.requireVerifiedEmail && !a.verified) throw new Fault(403, "email_verification_required");
+      if (registrationVerificationRequired(a) && !a.verified) throw new Fault(403, "email_verification_required");
       return operation(a, now, hash);
     });
   }

@@ -20,6 +20,8 @@ export interface Session { tokenHash: string; generation: string; expiresAt: num
 export interface DeviceChallenge { id: string; deviceId: string; sessionHash: string; nonce: string; expiresAt: number; generation: string }
 export interface Account {
   schema: 1; id: string; email: string; generation: string; verified: boolean; passwordVerifier: string;
+  verificationRequiredAtRegistration?: boolean;
+  registrationAdmission?: import("./registration.js").RegistrationAdmission;
   sequence: number; devices: Record<string, Device>; environments: Record<string, Environment>;
   grants: Record<string, SignedGrant>; sessions: Session[]; deviceChallenges: DeviceChallenge[]; events: Event[];
   idempotency: Record<string, { content: string; sequence: number }>;

@@ -25,7 +25,7 @@ test("actual local workerd SQLite DO checks permissions and persists accepted pu
       banner: { js: 'import { Buffer } from "node:buffer";' } });
     const script = bundle.outputFiles[0]!.text;
     mf = new Miniflare({ modules: true, script, compatibilityDate: "2026-07-30", compatibilityFlags: ["nodejs_compat"],
-      durableObjects: { ACCOUNTS: { className: "SyntheticVault", useSQLite: true }, FIXTURES: { className: "SyntheticVault", useSQLite: true } }, d1Databases: { DIRECTORY: "directory" },
+      durableObjects: { INSTANCES: { className: "InstanceRegistry", useSQLite: true }, ACCOUNTS: { className: "SyntheticVault", useSQLite: true }, FIXTURES: { className: "SyntheticVault", useSQLite: true } }, d1Databases: { DIRECTORY: "directory" },
       durableObjectsPersist: join(dir, "objects"), d1Persist: join(dir, "d1") });
     const account = await fixtureAccount();
     const oldRecovery = recoveryKeys(recoverySeed);

@@ -4,9 +4,9 @@
 
 ## 注册开关
 
-`HARMONIA_ALLOW_REGISTRATION` / Workers `ALLOW_REGISTRATION` 控制能否新注册。`HARMONIA_REQUIRE_EMAIL_VERIFICATION` / Workers `REQUIRE_EMAIL_VERIFICATION` 控制未验证邮箱能否登录、初始化可信手机。只接受字面值 `true` 启用注册、字面值 `false` 关闭验证；默认关闭注册并要求验证邮箱。
+`HARMONIA_ALLOW_REGISTRATION` / Workers `ALLOW_REGISTRATION` 控制普通新注册；尚未完成首次注册的实例仍允许首号候选。`HARMONIA_REQUIRE_EMAIL_VERIFICATION` / Workers `REQUIRE_EMAIL_VERIFICATION` 只固定新注册账号的邮箱要求。只接受字面值 `true` 启用注册、字面值 `false` 关闭验证；默认关闭注册并要求验证邮箱。
 
-关闭验证不会把邮箱标记为已验证。之后开启验证时，未验证账号需要先完成邮件证明。关闭注册不影响已有账号请求验证或经邮件证明重置。
+关闭验证不会把邮箱标记为已验证。之后开启验证不会锁已有未验证账号；原要求验证的 pending 也不会因后来关闭验证而豁免。关闭注册不影响已激活账号请求验证或经新的 reset 邮件证明重置；初始候选输家不能用 reset 绕过激活。完整实例状态和重试规则见 [连接与注册](REGISTRATION.md)。
 
 `POST /v1/register` JSON 为 `{email,credential}`。`credential` 仍是客户端固定 SHA256 的小写十六进制密码等价凭据；服务器独立随机盐 Argon2id（64 MiB、3 次、并行度 1）。响应为 `{accountId,accountGeneration,verificationRequired}`。新账号为空，不自动建立可信设备。要求验证时先持久化未验证账号并发送证明；发送失败返回受控错误，保留空账号但移除该次不可用证明，可重发验证邮件，不能直接使用 vault。
 
@@ -57,7 +57,7 @@ Nodemailer 发送的是中文纯文本事务邮件，没有入站邮件依赖。
 
 `EMAIL_FROM` 默认空，未配置发送地址/绑定时失败关闭。本轮没有启用发信域名、连接真实邮件凭据或发送真实邮件。未来发送地址必须来自已启用 Email Service 的域名；任意收件人需要 Workers Paid，免费发送限账号已验证目标，不承诺公开注册全部免费。[官方价格](https://developers.cloudflare.com/email-service/platform/pricing/)、[发送绑定约束](https://developers.cloudflare.com/email-service/configuration/send-bindings/) 给出当前规则。
 
-D1 只保留 `email` 与 `account_id`，通过唯一约束原子预留路由身份。每账号 DO 保存唯一权威密码验证值、代际、验证状态、证明、重置 receipt 和全部安全状态。中断留下的无账号目录预留可由后续注册填充；已有账号绝不覆盖。账号重置不需要跨 D1/DO 同步安全代际，避免撤销竞态。
+D1 只保留 `email` 与 `account_id`，通过唯一约束原子预留路由身份。每账号 DO 保存唯一权威密码验证值、代际、验证状态、证明、重置 receipt 和全部安全状态。中断留下的无账号目录预留可由后续注册填充；完整/legacy/proof-ready 账号不可覆盖，只有从未激活无vault的超期 pending 可按精确代际+1重新申请。实例首次完成决定仅在独立 Registry 持久化，不把安全状态重复放入 D1。账号重置不需要跨 D1/DO 同步安全代际，避免撤销竞态。
 
 [官方本地模拟器](https://developers.cloudflare.com/email-service/local-development/sending/) 会记录并落盘邮件内容；只允许合成测试内容，不能拿真实证明进行 `wrangler dev` 日志测试，更不能设置 remote 绑定偷偷发送邮件。本仓库 workerd 测试使用只存在测试入口的捕获发送器，生产不包含它。
 

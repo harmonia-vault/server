@@ -1,5 +1,6 @@
 import type { Account } from "./model.js";
 import { Fault } from "./model.js";
+import { assertRegistration, registrationComplete, registrationVerificationRequired } from "./registration.js";
 import { bytes, generation, identifier } from "./protocol.js";
 import type { Store } from "./store.js";
 import type { PasswordHasher } from "./password.js";
@@ -19,18 +20,52 @@ export class AccountLifecycle {
   constructor(readonly store: Store, private readonly passwords: PasswordHasher, private readonly clock: () => number = () => Math.floor(Date.now() / 1000), readonly mail?: EmailTransport) {}
   requireMail(): EmailTransport { if (!this.mail) throw new Fault(503, "email_verification_unavailable"); return this.mail; }
   async register(email: string, value: string, policy: Policy, reservedAccountId?: string): Promise<{ accountId: string; accountGeneration: string; verificationRequired: boolean }> {
-    if (!policy.allowRegistration) throw new Fault(403, "registration_disabled");
-    if (policy.requireEmailVerification) this.requireMail();
-    const address = normalizeEmail(email), id = reservedAccountId ?? crypto.randomUUID(); identifier(id);
-    const passwordVerifier = await this.passwords.hash(value);
-    this.store.create(emptyAccount(id, address, "1", passwordVerifier));
-    if (policy.requireEmailVerification) await this.requestProof(address, "verification");
-    return { accountId: id, accountGeneration: "1", verificationRequired: policy.requireEmailVerification };
+    const open = policy.allowRegistration, configuredVerification = policy.requireEmailVerification;
+    const state = await this.store.registrationAuthority.info();
+    if (!open && state.firstCompleted) throw new Fault(403, "registration_disabled");
+    if (configuredVerification) this.requireMail();
+    const address = normalizeEmail(email), oldId = this.store.byEmail(address), old = oldId ? this.store.read(oldId) : undefined;
+    if (old && (registrationComplete(old) || old.registrationAdmission!.state === "proof-ready" || old.registrationAdmission!.expiresAt > this.clock() || Object.keys(old.devices).length || Object.keys(old.environments).length || old.sequence)) throw new Fault(409, "account_exists");
+    const required = old ? registrationVerificationRequired(old) : configuredVerification;
+    if (required) this.requireMail();
+    const id = oldId ?? reservedAccountId ?? crypto.randomUUID(); identifier(id);
+    const passwordVerifier = await this.passwords.hash(value), now = this.clock();
+    const build = (generation: string): Account => {
+      const a = emptyAccount(id, address, generation, passwordVerifier);
+      a.verificationRequiredAtRegistration = required;
+      a.registrationAdmission = { id: crypto.randomUUID(), mode: open ? "open" : "initial", state: required ? "pending" : "proof-ready", expiresAt: now + 900, ...(required ? {} : { readyAt: now }) };
+      return a;
+    };
+    let accountGeneration: string;
+    if (old) {
+      accountGeneration = this.store.transaction(id, a => {
+        if (a.generation !== old.generation || a.passwordVerifier !== old.passwordVerifier || registrationComplete(a) || a.registrationAdmission?.state !== "pending" || a.registrationAdmission.expiresAt > now || Object.keys(a.devices).length || Object.keys(a.environments).length || a.sequence) throw new Fault(409, "account_changed");
+        if (BigInt(a.generation) >= 18446744073709551615n) throw new Fault(503, "generation_exhausted");
+        const generation = String(BigInt(a.generation) + 1n), replacement = build(generation);
+        for (const key of Object.keys(a)) delete (a as unknown as Record<string, unknown>)[key]; Object.assign(a, replacement); return generation;
+      });
+    } else { accountGeneration = "1"; this.store.create(build(accountGeneration)); }
+    if (required) await this.requestProof(address, "verification"); else await this.resumeRegistration(id);
+    return { accountId: id, accountGeneration, verificationRequired: required };
+  }
+  // 只能由服务器已持久的证明成功状态补全；login调用者须先核验正确密码。
+  async resumeRegistration(accountId: string, expected?: { generation: string; passwordVerifier: string }, reopenedLogin = false): Promise<void> {
+    const snapshot = this.store.read(accountId), admission = snapshot?.registrationAdmission;
+    if (!snapshot || !admission || admission.state !== "proof-ready") return;
+    if (expected && (snapshot.generation !== expected.generation || snapshot.passwordVerifier !== expected.passwordVerifier)) throw new Fault(409, "account_changed");
+    if (reopenedLogin && !expected) throw new Fault(401, "unauthorized");
+    const decision = await this.store.registrationAuthority.complete(accountId, admission.id, reopenedLogin ? "open" : admission.mode);
+    if (!decision.accepted) throw new Fault(403, "registration_disabled");
+    this.store.transaction(accountId, a => {
+      if (a.generation !== snapshot.generation || a.passwordVerifier !== snapshot.passwordVerifier || a.registrationAdmission?.id !== admission.id || a.registrationAdmission.state === "pending") throw new Fault(409, "account_changed");
+      a.registrationAdmission.state = "complete";
+    });
   }
   async requestProof(email: string, purpose: "verification" | "reset"): Promise<{ accepted: true }> {
     const mail = this.requireMail(), address = normalizeEmail(email), accountId = this.store.byEmail(address);
     if (!accountId) return accepted();
     const snapshot = this.store.read(accountId)!;
+    if (purpose === "reset") assertRegistration(snapshot);
     if (purpose === "verification" && snapshot.verified) return accepted();
     const token = randomToken(), hash = await tokenHash(token), verifierHash = await tokenHash(snapshot.passwordVerifier), now = this.clock(), id = crypto.randomUUID();
     this.store.transaction(accountId, account => {
@@ -60,18 +95,25 @@ export class AccountLifecycle {
   }
   private currentProof(account: Account, input: ProofInput, hash: string, verifierHash: string, purpose: EmailProof["purpose"]): EmailProof {
     sameAccount(account, input.accountGeneration);
+    if (purpose === "reset") assertRegistration(account);
     const p = account.emailProofs?.find(p => p.id === input.challengeId && p.purpose === purpose && p.tokenHash === hash);
     if (!p || p.generation !== account.generation || p.verifierHash !== verifierHash || p.expiresAt <= this.clock()) throw new Fault(401, "email_proof_invalid");
     return p;
   }
   async verifyEmail(accountId: string, input: ProofInput): Promise<{ verified: true }> {
     const { hash, verifierHash, snapshot } = await this.proof(accountId, input);
-    return this.store.transaction(accountId, account => {
+    this.store.transaction(accountId, account => {
       if (account.passwordVerifier !== snapshot.passwordVerifier) throw new Fault(409, "account_changed");
-      this.currentProof(account, input, hash, verifierHash, "verification");
-      account.verified = true; account.emailProofs = account.emailProofs!.filter(p => p.purpose !== "verification");
-      return { verified: true };
+      const a = account.registrationAdmission, replay = a?.state === "proof-ready" && a.proofReceipt?.challengeId === input.challengeId && a.proofReceipt.tokenHash === hash && a.proofReceipt.generation === input.accountGeneration;
+      if (!replay) {
+        this.currentProof(account, input, hash, verifierHash, "verification");
+        if (a?.state === "pending" && a.expiresAt <= this.clock()) throw new Fault(401, "email_proof_invalid");
+        account.verified = true; account.emailProofs = account.emailProofs!.filter(p => p.purpose !== "verification");
+        if (a?.state === "pending") { a.state = "proof-ready"; a.readyAt = this.clock(); a.proofReceipt = { challengeId: input.challengeId, tokenHash: hash, generation: account.generation }; }
+      }
     });
+    await this.resumeRegistration(accountId);
+    return { verified: true };
   }
   private receipt(account: Account, input: ProofInput, hash: string): ResetReceipt | undefined {
     const r = account.resetReceipt;
@@ -93,6 +135,7 @@ export class AccountLifecycle {
     if (input.confirmation !== "DELETE_OLD_VAULT") throw new Fault(400, "destructive_confirmation_required");
     const hash = await tokenHash(input.token), contentHash = await tokenHash(JSON.stringify(["harmonia/reset-commit/v1", accountId, input.accountGeneration, input.challengeId, hash, input.newCredential, input.confirmation]));
     const snapshot = this.store.read(accountId); if (!snapshot) throw new Fault(401, "email_proof_invalid");
+    assertRegistration(snapshot);
     const prior = this.receipt(snapshot, input, hash);
     if (prior) { if (prior.contentHash !== contentHash) throw new Fault(409, "idempotency_conflict"); return { accountId, accountGeneration: snapshot.generation, replayed: true }; }
     const verifierHash = await tokenHash(snapshot.passwordVerifier);
@@ -106,7 +149,10 @@ export class AccountLifecycle {
       if (account.passwordVerifier !== snapshot.passwordVerifier) throw new Fault(409, "account_changed");
       this.currentProof(account, input, hash, verifierHash, "reset");
       if (BigInt(account.generation) >= 18446744073709551615n) throw new Fault(503, "generation_exhausted");
+      assertRegistration(account);
       const newGeneration = String(BigInt(account.generation) + 1n), replacement = emptyAccount(account.id, account.email, newGeneration, passwordVerifier, true);
+      replacement.verificationRequiredAtRegistration = registrationVerificationRequired(account);
+      if (account.registrationAdmission) { replacement.registrationAdmission = structuredClone(account.registrationAdmission); delete replacement.registrationAdmission.proofReceipt; }
       replacement.resetReceipt = { id: input.challengeId, oldGeneration: snapshot.generation, generation: newGeneration, tokenHash: hash, contentHash, expiresAt: this.clock() + 900 };
       // Remove even future extension fields: old init/enrollment/recovery nonces cannot survive a reset.
       for (const key of Object.keys(account)) delete (account as unknown as Record<string, unknown>)[key];

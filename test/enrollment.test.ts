@@ -28,7 +28,7 @@ async function withEmpty(run: (h: Harness) => Promise<void>, verified = true): P
   const { store, sql } = nodeStore(path); let clock = now;
   try {
     const a = await fixtureAccount(accountId); a.devices = {}; a.environments = {}; a.grants = {}; a.events = []; a.sessions = [];
-    a.recoverySigningPublicKey = null; a.recoveryReceivingPublicKey = null; a.verified = verified; store.create(a);
+    a.recoverySigningPublicKey = null; a.recoveryReceivingPublicKey = null; a.verified = verified; a.verificationRequiredAtRegistration = true; store.create(a);
     const vault = new VaultService(store, { allowRegistration: true, requireEmailVerification: false }, () => clock);
     const login = await vault.login(email, clientCredential);
     await run({ store, path, vault, service: new EnrollmentService(store, true, () => clock), login, advance: n => { clock += n; } });

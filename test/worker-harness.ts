@@ -1,8 +1,14 @@
 // 测试专用 RPC 建立合成状态；生产 Worker 不导出这个类或路由。
-import { AccountVault } from "../src/worker.js";
+export { InstanceRegistry } from "../src/worker.js";
+import { InstanceRegistry, AccountVault } from "../src/worker.js";
 import worker from "../src/worker.js";
 import type { Email, EmailTransport } from "../src/email-transport.js";
 import type { Account } from "../src/model.js";
+export class SyntheticRegistry extends InstanceRegistry {
+  restartLegacyScan():void{ this.ctx.storage.sql.exec("DELETE FROM instance_migration"); }
+  arm(): void { this.ctx.storage.sql.exec("CREATE TRIGGER IF NOT EXISTS synthetic_registration_fault BEFORE UPDATE ON instance_registration WHEN NEW.completed=1 BEGIN SELECT RAISE(ABORT,'synthetic first decision failure'); END"); }
+  disarm(): void { this.ctx.storage.sql.exec("DROP TRIGGER IF EXISTS synthetic_registration_fault"); }
+}
 export class SyntheticVault extends AccountVault {
   protected override mailTransport(): EmailTransport {
     return { send: async (message: Email) => {
@@ -10,6 +16,10 @@ export class SyntheticVault extends AccountVault {
       this.ctx.storage.sql.exec("INSERT INTO synthetic_mail(message) VALUES(?)", JSON.stringify(message));
     } };
   }
+  account(accountId:string): Account | null { const r=this.ctx.storage.sql.exec<{data:string}>("SELECT data FROM accounts WHERE id=?",accountId).toArray()[0];return r?JSON.parse(r.data):null; }
+  activationFault(): void { this.ctx.storage.sql.exec("CREATE TRIGGER IF NOT EXISTS synthetic_activation_fault BEFORE UPDATE ON accounts WHEN json_extract(NEW.data,'$.registrationAdmission.state')='complete' BEGIN SELECT RAISE(ABORT,'synthetic activation failure'); END"); }
+  clearFault(): void { this.ctx.storage.sql.exec("DROP TRIGGER IF EXISTS synthetic_activation_fault"); }
+  removeAccount(accountId:string):void{this.ctx.storage.sql.exec("DELETE FROM accounts WHERE id=?",accountId);}
   mails(): Email[] {
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS synthetic_mail (message TEXT NOT NULL)");
     return this.ctx.storage.sql.exec<{ message: string }>("SELECT message FROM synthetic_mail").toArray().map(row => JSON.parse(row.message) as Email);
@@ -26,7 +36,7 @@ export class SyntheticVault extends AccountVault {
     this.ctx.storage.sql.exec("INSERT INTO accounts(id,email,data) VALUES(?,?,?)", account.id, account.email, JSON.stringify(account));
   }
 }
-interface TestEnv { ACCOUNTS: DurableObjectNamespace<AccountVault>; FIXTURES: DurableObjectNamespace<SyntheticVault>; DIRECTORY: D1Database; ALLOW_REGISTRATION?: string; REQUIRE_EMAIL_VERIFICATION?: string; EMAIL_FROM?: string }
+interface TestEnv { INSTANCES?: DurableObjectNamespace<import("../src/worker.js").InstanceRegistry>; ACCOUNTS: DurableObjectNamespace<AccountVault>; FIXTURES: DurableObjectNamespace<SyntheticVault>; DIRECTORY: D1Database; ALLOW_REGISTRATION?: string; REQUIRE_EMAIL_VERIFICATION?: string; EMAIL_FROM?: string }
 export default {
   async fetch(request: Request, env: TestEnv, ctx: ExecutionContext): Promise<Response> {
     if (new URL(request.url).pathname === "/test/seed") {

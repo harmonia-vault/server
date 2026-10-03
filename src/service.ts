@@ -2,6 +2,7 @@ import { recoveryAuthorityCapability } from "./recovery-authority-wire.js";
 import { buildIssuerRecoveryEvidence } from "./issuer-recovery.js";
 import type { RecoveryAuthorityAccount } from "./recovery-authority.js";
 import { buildIssuerEvidence, issuerOriginCapability } from "./issuer-origin.js";
+import { assertRegistration, registrationComplete, registrationVerificationRequired } from "./registration.js";
 import { AccountLifecycle } from "./account-lifecycle.js";
 import { issuerAuthorityHash } from "./issuer-proof.js";
 import type { EmailTransport } from "./email-transport.js";
@@ -26,11 +27,13 @@ export function sameAccount(account: Account, generationValue: string): void {
   if (account.generation !== generationValue) throw new Fault(401, "generation_stale");
 }
 export function session(account: Account, hash: string, now: number, restricted = false): import("./model.js").Session {
+  assertRegistration(account);
   const found = account.sessions.find(s => s.tokenHash === hash && s.generation === account.generation && s.expiresAt > now);
   if (!found || (!restricted && found.kind !== "login")) throw new Fault(401, "unauthorized");
   return found;
 }
 export function device(account: Account, deviceId: string): void {
+  assertRegistration(account);
   const current = account.devices[deviceId];
   if (!current || current.revoked) throw new Fault(403, "device_untrusted");
 }
@@ -66,11 +69,13 @@ export class VaultService {
     const verifier = snapshot?.passwordVerifier ?? DUMMY_VERIFIER;
     const valid = await this.passwords.verify(clientCredential, verifier);
     if (!snapshot || !accountId || !valid) throw new Fault(401, "unauthorized");
+    await this.accountLifecycle().resumeRegistration(accountId, snapshot, this.policy.allowRegistration);
     const token = randomToken(); const hash = await tokenHash(token); const now = this.clock();
     const expiresAt = now + sessionTTL;
     this.store.transaction(accountId, account => {
       sameAccount(account, snapshot.generation);
-      if (account.passwordVerifier !== snapshot.passwordVerifier || (this.policy.requireEmailVerification && !account.verified)) throw new Fault(401, "unauthorized");
+      if (!registrationComplete(account)) throw new Fault(401, "unauthorized");
+      if (account.passwordVerifier !== snapshot.passwordVerifier || (registrationVerificationRequired(account) && !account.verified)) throw new Fault(401, "unauthorized");
       account.sessions = account.sessions.filter(s => s.expiresAt > now);
       if (account.sessions.length >= 64) account.sessions.shift();
       account.sessions.push({ tokenHash: hash, generation: account.generation, expiresAt, kind: "login" });

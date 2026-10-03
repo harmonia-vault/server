@@ -18,7 +18,7 @@ export async function enrollmentRoute(request: Request, vault: VaultService): Pr
   const accountId = m[1]!, op = m[2]!, key = m[3], step = m[4];
   const version = op === "pairings-v4" ? "4" : op === "pairings-v3" ? "3" : op === "pairings-v2" ? "2" : "1";
   if (version !== "1" && url.search) throw new Fault(400, "query_forbidden");
-  const service = new EnrollmentService(vault.store, vault.policy.requireEmailVerification), credentials = auth(request);
+  const service = new EnrollmentService(vault.store), credentials = auth(request);
   let result: unknown;
   if (op === "vault-initializations") {
     if (request.method === "POST" && !key) result = await service.initialize(accountId, credentials, await body(request) as unknown as InitializationProposal);

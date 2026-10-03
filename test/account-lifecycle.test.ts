@@ -24,12 +24,11 @@ async function context(run: (c: ReturnType<typeof nodeStore>, account: AccountLi
   try { await run(c, account, vault, mails, path); } finally { try { c.sql.close(); } catch {} rmSync(dir, { recursive: true, force: true }); }
 }
 test("registration switches stay independent; email proof enables login without granting device trust", async () => context(async ({ store }, account, vault, mails) => {
-  await assert.rejects(account.register(email, clientCredential, { allowRegistration: false, requireEmailVerification: false }), denies("registration_disabled"));
-  await assert.rejects(account.register(email, clientCredential, { allowRegistration: false, requireEmailVerification: true }), denies("registration_disabled"));
   const registration = await account.register(email, clientCredential, vault.policy); assert.equal(registration.verificationRequired, true); assert.equal(mails.length, 1);
   const p = proof(mails[0]!); assert.equal(p.accountId, registration.accountId); assert.equal(store.read(p.accountId)!.verified, false);
   await assert.rejects(vault.login(email, clientCredential), denies("unauthorized"));
   await account.verifyEmail(p.accountId, p); assert.equal(store.read(p.accountId)!.verified, true);
+  await assert.rejects(account.register("closed@example.invalid", clientCredential, { allowRegistration: false, requireEmailVerification: false }), denies("registration_disabled"));
   const login = await vault.login(email, clientCredential);
   await assert.rejects(vault.pull(p.accountId, { token: login.token, deviceId: "admin", accountGeneration: "1" }, 0), denies("device_untrusted"));
   await assert.rejects(account.verifyEmail(p.accountId, p), denies("email_proof_invalid"));
@@ -37,14 +36,14 @@ test("registration switches stay independent; email proof enables login without 
   assert.equal(second.verificationRequired, false); assert.equal(store.read(second.accountId)!.verified, false); assert.equal(mails.length, 1);
   const optional = new VaultService(store, { allowRegistration: false, requireEmailVerification: false }, () => now);
   assert.equal((await optional.login("optional@example.invalid", clientCredential)).accountId, second.accountId);
-  await assert.rejects(vault.login("optional@example.invalid", clientCredential), denies("unauthorized"));
+  assert.equal((await vault.login("optional@example.invalid", clientCredential)).accountId, second.accountId);
 }));
 test("verification tokens are purpose/account/generation bound, expiring, and only hashes are persisted", async () => context(async ({ store }, account, vault, mails) => {
   const registered = await account.register(email, clientCredential, vault.policy), p = proof(mails[0]!);
   const serialized = JSON.stringify(store.read(registered.accountId)); assert.equal(serialized.includes(p.token), false); assert.equal(serialized.includes(clientCredential), false);
   await assert.rejects(account.verifyEmail(p.accountId, { ...p, token: Buffer.alloc(32, 9).toString("base64url") }), denies("email_proof_invalid"));
   await assert.rejects(account.verifyEmail(p.accountId, { ...p, accountGeneration: "2" }), denies("generation_stale"));
-  await assert.rejects(account.reset(p.accountId, { ...p, newCredential: replacement, confirmation: "DELETE_OLD_VAULT" }), denies("email_proof_invalid"));
+  await assert.rejects(account.reset(p.accountId, { ...p, newCredential: replacement, confirmation: "DELETE_OLD_VAULT" }), denies("registration_pending"));
   store.transaction(p.accountId, a => { a.emailProofs![0]!.expiresAt = now; });
   await assert.rejects(account.verifyEmail(p.accountId, p), denies("email_proof_invalid"));
 }));

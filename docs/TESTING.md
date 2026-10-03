@@ -123,3 +123,18 @@ MIT 源码可审阅，不应将以上局部通过描述为生产安全验收。
 本批没有 HTTP DAG hooks、major2协商或持久化状态变更，不把旧1MB账号容量提高到2MiB。新原子接受/nonce当前权限、跨profile幂等、真实第二次恢复HTTPS/SQLite/CLI/手机用户链仍未跑；旧来源契约没有重解释。自审新增实际重签反例曾复现：恢复候选 ID 首次出现在其来源图的旧双签归档内时，可用新公钥重新登记该 ID；候选内核尚未接入 HTTP。已在来源图通过后再次拒绝已有 ID，真实旧恢复钥/新设备钥两签反例通过，最终47项及230完整检查通过。没有通过修改向量或放松 Go 检查避开问题。没有重跑 Docker smoke/Wrangler dry-run，没有部署、发布或增加 CI。详见 [DAG内核范围](RECOVERY-DAG.md)。
 
 新 DAG 入口在 2 MiB/64 层边界内建立独立 JSON 快照，再验完整材料；内部 Map/Set/head/memo 为运行时私有状态，公开 getter 和来源图返回独立快照。新增3主项核验调用方修改原 pin、初始化、平坦记录、source、返回图和 getter Map/Set 不会改变已验状态，也核验快照大小/深度拒绝。内部迭代使用私有 owned 材料，不反复复制 getter；V5 返回状态同样隔离。旧 parser、HTTP 和持久化业务没有改变。
+
+
+## 后续实例连接与首次注册策略
+
+本节独立于 ae65ff6 的 DAG/230 项公开基线，不改记此前固定恢复快照。2026-10-03 04:08 UTC 查验最终 `mise run check`：245/245 通过，0 失败、0 跳过、0 取消；typecheck 与生产 build 通过。任务总时长 31.92 秒，测试约 31.57 秒；本地 workerd 固定 Argon2id 64 MiB/3 次首次登录约 1474 ms，不是线上配额验收。日志保留在本机 `/tmp/harmonia-registration-policy-fullcheck.log`。
+
+新增2文件定向15/15通过，约23.99秒：Node11项真实TCP/SQLite与workerd4项真实HTTP/SQLite DO，核验四开关组合、不同邮箱pending不占首号、证明后唯一CAS/无验证并发首号、永久完成标记、reset/删空不重开、关闭仍可已有登录、旧未验证账号开启验证后login/pair/boot，以及原true pending切off仍须证明。Node/DO都验证decision/activation写失败后耐久proof-ready、重启原receipt与正确密码补全、错误密码无改、超期pending精确gen+1替换与旧证明失效、legacy真实账号分页adopt/并发申请及孤D1预留不作证。
+
+重新允许注册后，已证明的初始输家仅通过真实Argon正确密码登录补全；原admission、账号/代际/验证要求、实例赢家均不变。原邮箱证明完整激活后仍单次终态401，丢回应通过原正确密码登录确证。reset始终需要新reset用途证明，注册验证开关不能豁免。公开 `/instance-info` 的精确product/protocol/三boolean、no-store、method/query限制及不含账号计数/邮箱均经过实际请求。Workers新绑定类型已由固定Wrangler本地生成，没有远端迁移或部署。
+
+中间失败保留：初次typecheck是exactOptional的promise字段及测试Miniflare/DOM Response类型差异；补对应真实类型后通过。旧33项回归初测32/33，未激活账号reset新增先返回registration_pending，按新门槛更新断言，原已激活账号用途负例继续覆盖。新Node初测9/10，旧fixture缺可信根而被trust_root_required拒绝，补真实恢复签manifest后通过，没有放宽信任检查。一次完整检查244/245，无验证并发输家可能在建账号前就被拒绝，其登录正确返回401而非已建输家的403；最终精确按耐久是否建账号核拒绝，只有一个账号激活，完整245通过。
+
+新增实例权威只存不可逆首次决定与opaque赢家ID；账号凭据、证明和激活进度只有账号Store一份，D1仍仅email/account_id路由。跨DO采用耐久证明/决定/幂等激活，不声称跨DO事务。旧缺字段grandfather与冻结的verificationRequiredAtRegistration在同账号存储核验，账号1MB容量及Argon参数未变。
+
+本批没有重跑Docker smoke或Wrangler dry-run，没有真实邮件投递、Cloudflare远端创建/部署、DAG HTTPmajor2开放、CI或Release。手机连接/注册/审批CLI真实产品用户链由独立后续验收记录，本批15项不代替它。接口、迁移与故障恢复见 [连接与注册](REGISTRATION.md)。

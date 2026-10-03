@@ -1,3 +1,4 @@
+import { instanceInfo } from "./registration.js";
 import { recoveryAuthorityRoute } from "./http-recovery-authority.js";
 import { Fault, type Auth, type SignedGrant, type SignedMutation } from "./model.js";
 import type { VaultService } from "./service.js";
@@ -40,7 +41,11 @@ export async function route(request: Request, service: VaultService): Promise<Re
     const url = new URL(request.url);
     if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Fault(400, "https_required");
     let result: unknown;
-    if (request.method === "GET" && url.pathname === "/health") result = { status: "experimental", trustedEnrollment: false };
+    if (url.pathname === "/instance-info") {
+      if (request.method !== "GET") throw new Fault(405, "method_not_allowed");
+      if (url.search) throw new Fault(400, "query_forbidden");
+      result = await instanceInfo(service.store.registrationAuthority, service.policy);
+    } else if (request.method === "GET" && url.pathname === "/health") result = { status: "experimental", trustedEnrollment: false };
     else if (request.method === "POST" && ["/v1/register", "/v1/login"].includes(url.pathname)) {
       const b = await body(request);
       if (typeof b.email !== "string" || typeof b.credential !== "string") throw new Fault(400, "login_input_invalid");

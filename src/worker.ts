@@ -1,3 +1,4 @@
+import { SqlRegistrationAuthority, instanceInfo, registrationComplete, type RegistrationAuthority, type RegistrationAdmission, type RegistrationState } from "./registration.js";
 import { DurableObject } from "cloudflare:workers";
 import { SqlStore, type Sql } from "./store.js";
 import { VaultService, normalizeEmail } from "./service.js";
@@ -7,19 +8,52 @@ import { cloudflareEmail, type EmailTransport } from "./email-transport.js";
 import { Fault } from "./model.js";
 import { workerPassword } from "./worker-password.js";
 import { credential, DUMMY_VERIFIER } from "./password.js";
-type Env = Omit<Cloudflare.Env, "EMAIL"> & { EMAIL?: SendEmail };
+type Env = Omit<Cloudflare.Env, "EMAIL" | "INSTANCES"> & { EMAIL?: SendEmail; INSTANCES?: DurableObjectNamespace<InstanceRegistry> };
 class DurableSql implements Sql {
   constructor(private readonly storage: DurableObjectStorage) {}
   execute(query: string, params: (string | number | null)[] = []): void { this.storage.sql.exec(query, ...params).toArray(); }
   rows(query: string, params: (string | number | null)[] = []): Record<string, unknown>[] { return this.storage.sql.exec(query, ...params).toArray(); }
   transaction<T>(operation: () => T): T { return this.storage.transactionSync(operation); }
 }
+// 全实例首次决定独立于账号；这里没有邮箱、凭据、证明nonce或vault权限副本。
+export class InstanceRegistry extends DurableObject<Env> {
+  private readonly authority: SqlRegistrationAuthority;
+  private migration: Promise<void> | undefined;
+  constructor(ctx: DurableObjectState, env: Env) { super(ctx, env); this.authority = new SqlRegistrationAuthority(new DurableSql(ctx.storage), false); }
+  private async migrateLegacy(): Promise<void> {
+    if ((await this.authority.info()).firstCompleted) return;
+    this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS instance_migration (singleton INTEGER PRIMARY KEY, finished INTEGER NOT NULL)");
+    if (this.ctx.storage.sql.exec<{finished:number}>("SELECT finished FROM instance_migration WHERE singleton=1").toArray()[0]?.finished === 1) return;
+    await this.env.DIRECTORY.prepare("CREATE TABLE IF NOT EXISTS account_directory (email TEXT PRIMARY KEY, account_id TEXT UNIQUE NOT NULL)").run();
+    let cursor = "";
+    while (true) {
+      const page = await this.env.DIRECTORY.prepare("SELECT account_id FROM account_directory WHERE account_id>? ORDER BY account_id LIMIT 16").bind(cursor).all<{ account_id:string }>();
+      for (const row of page.results) {
+        // D1仅候选路由；真实账号Store决定是否是已存在完整账号。
+        if (await this.env.ACCOUNTS.getByName(row.account_id).registrationCompleted(row.account_id)) { this.authority.adopt(row.account_id); return; }
+        cursor = row.account_id;
+      }
+      if (page.results.length < 16) break;
+    }
+    this.ctx.storage.sql.exec("INSERT INTO instance_migration(singleton,finished) VALUES(1,1) ON CONFLICT(singleton) DO UPDATE SET finished=1");
+  }
+  private async ready(): Promise<void> {
+    this.migration ??= this.migrateLegacy().catch(error => { this.migration = undefined; throw error; });
+    await this.migration;
+  }
+  async info(): Promise<RegistrationState> { await this.ready(); return this.authority.info(); }
+  async complete(accountId:string, admissionId:string, mode:RegistrationAdmission["mode"]): Promise<{accepted:boolean}> { await this.ready(); return this.authority.complete(accountId,admissionId,mode); }
+}
+function registrationAuthority(env: Env): RegistrationAuthority {
+  if (!env.INSTANCES) throw new Fault(503, "instance_unavailable");
+  return env.INSTANCES.getByName("harmonia-instance-v1");
+}
 export class AccountVault extends DurableObject<Env> {
   private readonly service: VaultService;
   private readonly notifications: NotificationAuthority;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    const store = new SqlStore(new DurableSql(ctx.storage));
+    const store = new SqlStore(new DurableSql(ctx.storage), { info: () => registrationAuthority(env).info(), complete: (id, admission, mode) => registrationAuthority(env).complete(id, admission, mode) });
     this.notifications = new NotificationAuthority(store);
     store.onCommit(() => this.ctx.waitUntil(this.refreshNotifications()));
     this.service = new VaultService(store, { allowRegistration: env.ALLOW_REGISTRATION === "true", requireEmailVerification: env.REQUIRE_EMAIL_VERIFICATION !== "false" }, undefined, workerPassword, this.mailTransport(env));
@@ -57,6 +91,7 @@ export class AccountVault extends DurableObject<Env> {
   webSocketClose(ws: WebSocket, code: number): void { try { ws.close(code === 4003 ? 4003 : 1000, "closed"); } catch { /* 已关闭 */ } this.ctx.waitUntil(this.refreshNotifications()); }
   webSocketError(ws: WebSocket): void { try { ws.close(1011, "reconnect_required"); } catch { /* 已关闭 */ } this.ctx.waitUntil(this.refreshNotifications()); }
   protected mailTransport(env: Env): EmailTransport | undefined { return cloudflareEmail(env.EMAIL, env.EMAIL_FROM); }
+  registrationCompleted(accountId: string): boolean { const a = this.service.store.read(accountId); return !!a && registrationComplete(a); }
   async register(accountId: string, email: string, value: string): Promise<{ status: number; headers: Record<string, string>; body: string }> {
     try { return { status: 200, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify(await this.service.register(email, value, accountId)) }; }
     catch (error) { const fault = error instanceof Fault ? error : new Fault(500, "internal_error"); return { status: fault.status, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify({ error: fault.code }) }; }
@@ -78,6 +113,11 @@ export default {
     try {
       const url = new URL(request.url);
       if (url.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) throw new Fault(400, "https_required");
+      if (url.pathname === "/instance-info") {
+        if (request.method !== "GET") throw new Fault(405, "method_not_allowed");
+        if (url.search) throw new Fault(400, "query_forbidden");
+        return Response.json(await instanceInfo(registrationAuthority(env), { allowRegistration: env.ALLOW_REGISTRATION === "true", requireEmailVerification: env.REQUIRE_EMAIL_VERIFICATION !== "false" }), { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+      }
       if (url.pathname === "/health") return Response.json({ status: "experimental", trustedEnrollment: false, registration: env.ALLOW_REGISTRATION === "true" }, { headers: { "cache-control": "no-store" } });
       const subscription = url.pathname.match(/^\/v1\/accounts\/([A-Za-z0-9._:-]+)\/notifications$/);
       if (subscription) { notificationPath(request); return env.ACCOUNTS.getByName(subscription[1]!).fetch(request); }
@@ -94,7 +134,8 @@ export default {
         }else payload=raw.toString("utf8");
       }
       if (url.pathname === "/v1/register" && request.method === "POST") {
-        if (env.ALLOW_REGISTRATION !== "true") throw new Fault(403, "registration_disabled");
+        const instance = await registrationAuthority(env).info();
+        if (env.ALLOW_REGISTRATION !== "true" && instance.firstCompleted) throw new Fault(403, "registration_disabled");
         if (env.REQUIRE_EMAIL_VERIFICATION !== "false" && !cloudflareEmail(env.EMAIL, env.EMAIL_FROM)) throw new Fault(503, "email_verification_unavailable");
         if (!request.headers.get("content-type")?.startsWith("application/json")) throw new Fault(415, "json_required");
         let b: unknown; try { b = JSON.parse(payload ?? "null"); } catch { throw new Fault(400, "json_invalid"); }
