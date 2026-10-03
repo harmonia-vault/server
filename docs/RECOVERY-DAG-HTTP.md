@@ -23,4 +23,9 @@
 
 账户安全权威仅存账号事务状态；D1 保持目录职责。原初始化或已接受来源历史缺失的旧状态不能从目录重建 pin。账号已进入 DAG 状态后，旧恢复和旧入网路由拒绝绕过；旧 parser 不能吞 P4。
 
-这是实验性接口。当前纵链实现连续恢复；manager-reanchor 新入口、P4 授权/环境管理控制及移动 UI 仍有后续接线门槛。Node/Workers 合成签包测试与 Go 真实 HPKE/原生 PAKE 联合测试需分别记录范围。
+这是实验性接口。当前纵链实现连续恢复；P4 环境控制与 create/rotate 使用明确 major2 路由，rename/delete 保留原路由的 header 兼容并校验当前 DAG 权源，合同见 protocol 的 P4-ENVIRONMENTS.md；manager-reanchor 新入口、P4 授权管理控制及移动 UI 仍有后续接线门槛。Node/Workers 合成签包测试与 Go 真实 HPKE/原生 PAKE 联合测试需分别记录范围。
+
+
+`GET /issuer-evidence?environmentId=E&capability=issuer-recovery-dag-v1` 返回 typed P4 和完整当前接收者集合；`POST /environment-changes-v4` 与原 ID status 共用 V2/V3 的环境签名包与幂等库。新 P4 create/rotate 逐次核当前完整 DAG 权源，旧 profile 不能绕过；同一已接受包的原收据仍跨路由稳定。rename/delete 沿原签名域，在已要求 DAG 的账号上也核当前 DAG 来源。没有把安全权威移到 D1 或另建冗余账号状态。
+
+新增 Node TCP 与真实本地 workerd/SQLite DO 回归分别检查 CRUD、完整接收者轮换、角色与期限、缺接收者/旧快照拒绝、major/capability/禁 query，以及接受原包跨 DAG 与旧路由后的收据。该层封套和密文使用合成字节，不证明 HPKE 或 PAKE；它们由 workspace 的真实 Go HTTPS 联合主项单独记录。

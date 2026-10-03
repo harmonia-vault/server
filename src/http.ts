@@ -120,7 +120,7 @@ async function routeSelected(request: Request, service: VaultService): Promise<R
 
 export async function route(request:Request,service:VaultService):Promise<Response>{
  let major:1|2=1;
- try{const u=new URL(request.url);major=requestProtocolMajor(request,u.searchParams.get('capability')==='issuer-recovery-dag-v1'||/\/(?:recovery-authority-(?:challenges|transitions)-v2|recovered-(?:device-challenges|devices)-v2|recovery-vault-v2|pairings-v5)(?:\/|$)/.test(u.pathname));}
+ try{const u=new URL(request.url);major=requestProtocolMajor(request,u.searchParams.get('capability')==='issuer-recovery-dag-v1'||/\/(?:recovery-authority-(?:challenges|transitions)-v2|recovered-(?:device-challenges|devices)-v2|recovery-vault-v2|pairings-v5|environment-changes-v4)(?:\/|$)/.test(u.pathname));}
  catch(error){const f=error instanceof Fault?error:new Fault(500,'internal_error');return withProtocolMajor(Response.json({error:f.code},{status:f.status,headers:{'cache-control':'no-store'}}),major);}
  return withProtocolMajor(await routeSelected(request,service),major);
 }

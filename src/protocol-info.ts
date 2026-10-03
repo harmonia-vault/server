@@ -13,7 +13,7 @@ export function protocolInfo(): {
 }
 export function requestProtocolMajor(request: Request, requiresDAG = false): 1 | 2 {
   const u=new URL(request.url);
-  requiresDAG ||= u.searchParams.get('capability')===recoveryDAGCapability || /\/(?:recovery-authority-(?:challenges|transitions)-v2|recovered-(?:device-challenges|devices)-v2|recovery-vault-v2|pairings-v5)(?:\/|$)/.test(u.pathname);
+  requiresDAG ||= u.searchParams.get('capability')===recoveryDAGCapability || /\/(?:recovery-authority-(?:challenges|transitions)-v2|recovered-(?:device-challenges|devices)-v2|recovery-vault-v2|pairings-v5|environment-changes-v4)(?:\/|$)/.test(u.pathname);
   const value = request.headers.get(protocolMajorHeader);
   // 旧客户端没有该字段时维持major1；逗号合并值或非规范数字不能成为major2。
   if (value !== null && value !== '1' && value !== '2') throw new Fault(426, 'protocol_major_unsupported');
