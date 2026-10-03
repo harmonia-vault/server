@@ -85,3 +85,17 @@ MIT 源码可审阅，不应将以上局部通过描述为生产安全验收。
 - 独立管理 Go 联合验收修复后两轮通过，约 4.58 秒与 5.62 秒，包括临时 B none、C 清缓存、全局撤销丢响应/AES 重启精确回执，以及旧 token 失效后 boot 只查原 hash；最终 race 当时待执行，没有提前记为通过。独立恢复 Go HTTPS/race 4 主项 8 场景约 15.10 秒通过，含全设备撤销/new Y/rotate X/gen2/来源篡改及空环境公开 HPKE 替包拒绝；空环境反例约 1.26 秒。父任务汇总各验收源码与准确版本。
 
 新恢复封套投影只在 `envelopeEvidence=recovery-envelope-v1` 且原 capability 显式请求时出现，所有来源与 vault 处于同一个快照。所有环境包括空环境先验签名承诺再解封；HPKE 成功不是真实性证据。当前连续恢复授权链/恢复设备证书的新服务路由尚未接入，本节不记录它们通过。此次未重跑 Docker smoke/Wrangler dry-run，未部署、发布或增加 CI。详见 [恢复封套承诺](RECOVERY-ENVELOPES.md)。
+
+
+## 后续连续恢复授权与恢复设备来源
+
+本节独立于 e1572d6 的 160 项修复记录，不覆盖固定公开恢复快照。2026-10-03 01:13 UTC 查验 `mise run check` 最终 178/178 通过，0 失败、0 跳过，typecheck 与生产 build 通过，任务总时长 18.25 秒、测试约 17.88 秒。本地 workerd 首次 Argon2id 64 MiB/3 次约 1535 ms，不是线上配额验收。日志保留在本机 `/tmp/harmonia-recovery-authority-fullcheck.log`。
+
+新增两个测试文件定向 18/18 通过，约 7.90 秒：
+
+- 4 项独立 Go 向量/JSON 结构测试：原初始化、25 项双签 transition/ALL Admin reanchor、18 项恢复设备、12 项 proof3 的确定字节/摘要及真实 Ed25519 两签；缺材料、字段替换、旧钥、重复操作和 JSON 歧义拒绝。
+- 14 项 Node TCP/workerd HTTP/真实 SQLite 回归：全部旧设备撤销后恢复轮换、保留受限、显式选择新设备权限、开机/proof3、恢复 Admin 继续批准只读设备及来源归档；只读 Y 不获得 X 的业务标签/变量/密文，RW/Admin 签入仍经过当前权限机制。批准后管理者降权、到期 nonce、公钥复用、缺归档、原包幂等/状态 hash、SQL UPDATE 失败回滚、旧代际、旧 v1 断链只可 ALL Admin 双签重连和专用 2 MiB/旧 100 kB 外围限制。
+
+中间失败保留：reset 测试夹具仅改账号代际而保留旧根签名，被持久化不变量拒绝；改成完整合成重置后通过。另一组 F 接收钥误复用原根公钥，服务以 pairing_identity_invalid 拒绝，换独立合成 X25519 钥后通过；没有放宽签名、公钥用途或客户端校验。
+
+本批 HTTP 封套为合成结构输入，静态向量包含真实已冻结密码学封套；尚不把服务定向测试记成完整真实 PAKE/HPKE/手机强认证/恢复码回填/受保护落盘用户链。相关 Go/原生联合验收由父任务独立记录。没有重跑 Docker smoke/Wrangler dry-run，没有部署、发布或 CI。内嵌恢复 actor proof3 union、所有手机高层管理入口仍按 [范围限制](RECOVERY-AUTHORITY.md) 失败关闭。

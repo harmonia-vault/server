@@ -1,3 +1,4 @@
+import { recoveryAuthorityRoute } from "./http-recovery-authority.js";
 import { Fault, type Auth, type SignedGrant, type SignedMutation } from "./model.js";
 import type { VaultService } from "./service.js";
 import { accountRoute } from "./http-account.js";
@@ -7,6 +8,7 @@ import { NotificationAuthority } from "./notifications.js";
 import { environmentRoute } from "./http-environments.js";
 import { grantManagementRoute } from "./http-grant-management.js";
 export function bodyLimit(method: string, pathname: string): number {
+  if(method==="POST"&&/^\/v1\/accounts\/[A-Za-z0-9._:-]+\/(?:recovery-authority-transitions|recovered-devices|pairings-v4\/[A-Za-z0-9._:-]+\/approve)$/.test(pathname))return 2*1024*1024;
   if (method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/pairings-v3\/[A-Za-z0-9._:-]+\/approve$/.test(pathname)) return 1_000_000;
   if (method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/pairings-v2\/[A-Za-z0-9._:-]+\/approve$/.test(pathname)) return 262144;
   return method === "POST" && /^\/v1\/accounts\/[A-Za-z0-9._:-]+\/environment-changes(?:-v2)?$/.test(pathname) ? 1_000_000 : 100_000;
@@ -52,6 +54,8 @@ export async function route(request: Request, service: VaultService): Promise<Re
       if (environment.handled) return Response.json(environment.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
       const management = await grantManagementRoute(request, service.store);
       if (management.handled) return Response.json(management.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+      const recoveryAuthority = await recoveryAuthorityRoute(request, service.store);
+      if(recoveryAuthority.handled)return Response.json(recoveryAuthority.result,{headers:{"cache-control":"no-store","x-content-type-options":"nosniff"}});
       const lifecycle = await lifecycleRoute(request, service.store);
       if (lifecycle.handled) return Response.json(lifecycle.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
       const match = url.pathname.match(/^\/v1\/accounts\/([A-Za-z0-9._:-]+)\/(pull|mutations|mutation-status|grants|device-challenges|device-sessions|notification-tickets)$/);

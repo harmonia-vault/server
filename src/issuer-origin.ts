@@ -404,3 +404,11 @@ export function buildRecoveryIssuerEvidence(account: EnrollmentAccount): IssuerO
   }
   return buildIssuerEvidence(account, original.proposal.device.id, sources, targets);
 }
+
+/** 对独立业务包的精确历史来源核验，不构造占位审批证书，不授当前角色。 */
+export function verifyAcceptedIssuerOriginEvidence(account: EnrollmentAccount, proof: IssuerOriginProof): ReturnType<typeof verifyIssuerOriginGraph> {
+  if (proof.accountId !== account.id || proof.accountGeneration !== account.generation) fail("account_binding_invalid");
+  const graph = verifyIssuerOriginGraph(proof);
+  acceptedIssuerHistory(account, proof, graph, initialAuthorityHashes(account));
+  return graph;
+}

@@ -1,3 +1,6 @@
+import { enrollmentV4Fields, issuerRecoveryStillCurrent, type EnrollmentApprovalV4, type IssuerRecoveryProof } from "./issuer-recovery.js";
+import { recoveryAuthorityCapability } from "./recovery-authority-wire.js";
+import type { RecoveryAuthorityAccount } from "./recovery-authority.js";
 import { enrollmentV3Fields, issuerOriginCapability, issuerOriginStillCurrent, type EnrollmentApprovalV3, type IssuerOriginProof } from "./issuer-origin.js";
 import { enrollmentV2Fields, issuerProofCapability, issuerProofStillCurrent, type EnrollmentApprovalV2, type IssuerProof } from "./issuer-proof.js";
 import type { Account, Auth, SignedGrant } from "./model.js";
@@ -13,6 +16,8 @@ export interface PairingProposalV2 extends PairingProposal { certificateVersion:
 export interface ApprovalRequestV2 { certificateVersion: "2"; capabilities: string[]; grants: SignedGrant[]; transcriptHash: string; issuerProof: IssuerProof; signature: string }
 export interface PairingProposalV3 extends PairingProposal { certificateVersion: "3"; capabilities: string[] }
 export interface ApprovalRequestV3 { certificateVersion: "3"; capabilities: string[]; grants: SignedGrant[]; transcriptHash: string; issuerProof: IssuerOriginProof; signature: string }
+export interface PairingProposalV4 extends PairingProposal { certificateVersion:"4"; capabilities:string[] }
+export interface ApprovalRequestV4 {certificateVersion:"4";capabilities:string[];grants:SignedGrant[];transcriptHash:string;issuerProof:IssuerRecoveryProof;signature:string}
 export interface Relay { side: "initiator" | "approver"; kind: "message" | "confirmation"; payload: string; signature: string }
 function empty(a: EnrollmentAccount): void {
   if (a.trustRoot || a.recoverySigningPublicKey || Object.keys(a.devices).length || Object.keys(a.environments).length ||
@@ -112,10 +117,11 @@ export class EnrollmentService {
       return { ...rootView(accountId, r), replayed: false };
     });
   }
-  async beginPairing(accountId: string, auth: LoginAuth, proposal: PairingProposal | PairingProposalV2 | PairingProposalV3, version: "1" | "2" | "3" = "1"): Promise<Record<string, unknown>> {
+  async beginPairing(accountId: string, auth: LoginAuth, proposal: PairingProposal | PairingProposalV2 | PairingProposalV3 | PairingProposalV4, version: "1" | "2" | "3" | "4" = "1"): Promise<Record<string, unknown>> {
     exact(proposal, ["idempotencyKey", "deviceId", "signingPublicKey", "receivingPublicKey", "approverDeviceId", ...(version !== "1" ? ["certificateVersion", "capabilities"] : [])]);
     if (version === "2") negotiated(proposal as PairingProposalV2);
     if (version === "3") negotiatedV3(proposal as PairingProposalV3);
+    if (version === "4") negotiatedV4(proposal as PairingProposalV4);
     identifier(proposal.idempotencyKey); identifier(proposal.deviceId); identifier(proposal.approverDeviceId);
     bytes(proposal.signingPublicKey, 32); bytes(proposal.receivingPublicKey, 32);
     if (proposal.deviceId === proposal.approverDeviceId || proposal.signingPublicKey === proposal.receivingPublicKey) throw new Fault(400, "pairing_identity_invalid");
@@ -148,7 +154,7 @@ export class EnrollmentService {
       return pairingView(record);
     });
   }
-  private async pairing<T>(accountId: string, auth: LoginAuth & { deviceId?: string }, key: string, operation: (a: EnrollmentAccount, r: PairingRecord, side: "initiator" | "approver", now: number) => T, version: "1" | "2" | "3" = "1"): Promise<T> {
+  private async pairing<T>(accountId: string, auth: LoginAuth & { deviceId?: string }, key: string, operation: (a: EnrollmentAccount, r: PairingRecord, side: "initiator" | "approver", now: number) => T, version: "1" | "2" | "3" | "4" = "1"): Promise<T> {
     identifier(key); if (auth.deviceId) identifier(auth.deviceId);
     return this.authorized(accountId, auth, (a, now, hash) => {
       const r = own(a.pairingSessions, key);
@@ -161,10 +167,10 @@ export class EnrollmentService {
       return operation(a, r, side, now);
     });
   }
-  async pairingStatus(accountId: string, auth: LoginAuth & { deviceId?: string }, key: string, version: "1" | "2" | "3" = "1"): Promise<Record<string, unknown>> {
+  async pairingStatus(accountId: string, auth: LoginAuth & { deviceId?: string }, key: string, version: "1" | "2" | "3" | "4" = "1"): Promise<Record<string, unknown>> {
     return this.pairing(accountId, auth, key, (_, r) => pairingView(r), version);
   }
-  async relay(accountId: string, auth: LoginAuth & { deviceId?: string }, key: string, value: Relay, version: "1" | "2" | "3" = "1"): Promise<Record<string, unknown>> {
+  async relay(accountId: string, auth: LoginAuth & { deviceId?: string }, key: string, value: Relay, version: "1" | "2" | "3" | "4" = "1"): Promise<Record<string, unknown>> {
     exact(value, ["side", "kind", "payload", "signature"]);
     if (!["initiator", "approver"].includes(value.side) || !["message", "confirmation"].includes(value.kind)) throw new Fault(400, "relay_invalid");
     bytes(value.payload, 32); bytes(value.signature, 64);
@@ -225,7 +231,22 @@ export class EnrollmentService {
       return pairingView(record);
     }, "3");
   }
-  async completePairing(accountId: string, auth: LoginAuth, key: string, signature: string, version: "1" | "2" | "3" = "1"): Promise<Record<string, unknown>> {
+  async approveV4(accountId: string, auth: Auth, key: string, value: ApprovalRequestV4): Promise<Record<string, unknown>> {
+    exact(value, ["certificateVersion", "capabilities", "grants", "transcriptHash", "issuerProof", "signature"]); negotiatedV4(value);
+    return this.pairing(accountId, auth, key, (a, record, side, now) => {
+      if (side !== "approver" || record.sequence) throw new Fault(403, "admin_required");
+      if (value.transcriptHash !== transcriptHash(record)) throw new Fault(403, "pairing_transcript_mismatch");
+      const certificate: EnrollmentApprovalV4 = { certificateVersion: "4", capabilities:["issuer-recovery-v1"], context: structuredClone(record.context), pairingProfile,
+        transcriptHash: value.transcriptHash, grants: structuredClone(value.grants), issuerProof: structuredClone(value.issuerProof), approverSignature: value.signature };
+      enrollmentV4Fields(certificate);
+      approvalStillValid(a, record, certificate.grants, now);
+      issuerRecoveryStillCurrent(a as RecoveryAuthorityAccount, certificate);
+      if (record.approval && (JSON.stringify(enrollmentV4Fields(record.approval as EnrollmentApprovalV4)) !== JSON.stringify(enrollmentV4Fields(certificate)) || record.approval.approverSignature !== certificate.approverSignature)) throw new Fault(409, "approval_already_consumed");
+      record.approval = certificate;
+      return pairingView(record);
+    }, "4");
+  }
+  async completePairing(accountId: string, auth: LoginAuth, key: string, signature: string, version: "1" | "2" | "3" | "4" = "1"): Promise<Record<string, unknown>> {
     bytes(signature, 64);
     return this.pairing(accountId, auth, key, (a, r, side, now) => {
       if (side !== "initiator" || !r.approval) throw new Fault(403, "approval_required");
@@ -240,7 +261,8 @@ export class EnrollmentService {
       approvalStillValid(a, r, certificate.grants, now);
       if (r.certificateVersion === "2") issuerProofStillCurrent(a, certificate as EnrollmentApprovalV2);
       if (r.certificateVersion === "3") issuerOriginStillCurrent(a, certificate as EnrollmentApprovalV3);
-      const fields = r.certificateVersion === "3" ? enrollmentV3Fields(certificate as EnrollmentApprovalV3) : r.certificateVersion === "2" ? enrollmentV2Fields(certificate as EnrollmentApprovalV2) : enrollmentFields(certificate);
+      if(r.certificateVersion==="4")issuerRecoveryStillCurrent(a as RecoveryAuthorityAccount,certificate as EnrollmentApprovalV4);
+      const fields = r.certificateVersion === "4" ? enrollmentV4Fields(certificate as EnrollmentApprovalV4) : r.certificateVersion === "3" ? enrollmentV3Fields(certificate as EnrollmentApprovalV3) : r.certificateVersion === "2" ? enrollmentV2Fields(certificate as EnrollmentApprovalV2) : enrollmentFields(certificate);
       verify(r.context.approverSigningPublicKey, canonical(fields), certificate.approverSignature);
       verify(r.context.initiatorSigningPublicKey, canonical(fields), signature);
       certificate.initiatorSignature = signature;
@@ -261,7 +283,7 @@ export function relayFields(r: PairingRecord, value: Pick<Relay, "side" | "kind"
 }
 function pairingView(r: PairingRecord): Record<string, unknown> {
   return structuredClone({ state: r.sequence ? "complete" : r.approval ? "approved" : "pending", idempotencyKey: r.idempotencyKey,
-    ...(r.certificateVersion ? { certificateVersion: r.certificateVersion, capabilities: [r.certificateVersion === "3" ? issuerOriginCapability : issuerProofCapability] } : {}), pairingProfile, context: r.context, messages: r.messages, confirmations: r.confirmations, approval: r.approval ?? null, sequence: r.sequence ?? null });
+    ...(r.certificateVersion ? { certificateVersion: r.certificateVersion, capabilities: [r.certificateVersion === "4" ? recoveryAuthorityCapability : r.certificateVersion === "3" ? issuerOriginCapability : issuerProofCapability] } : {}), pairingProfile, context: r.context, messages: r.messages, confirmations: r.confirmations, approval: r.approval ?? null, sequence: r.sequence ?? null });
 }
 
 function negotiated(value: { certificateVersion: string; capabilities: string[] }): void {
@@ -271,3 +293,5 @@ function negotiated(value: { certificateVersion: string; capabilities: string[] 
 function negotiatedV3(value: { certificateVersion: string; capabilities: string[] }): void {
   if (value.certificateVersion !== "3" || !Array.isArray(value.capabilities) || value.capabilities.length !== 1 || value.capabilities[0] !== issuerOriginCapability) throw new Fault(400, "issuer_origin_capability_required");
 }
+
+function negotiatedV4(value:{certificateVersion:string;capabilities:string[]}):void{if(value.certificateVersion!=="4"||!Array.isArray(value.capabilities)||JSON.stringify(value.capabilities)!==JSON.stringify([recoveryAuthorityCapability]))throw new Fault(400,"recovery_capability_required");}

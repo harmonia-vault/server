@@ -1,3 +1,6 @@
+import { recoveryAuthorityCapability } from "./recovery-authority-wire.js";
+import { buildIssuerRecoveryEvidence } from "./issuer-recovery.js";
+import type { RecoveryAuthorityAccount } from "./recovery-authority.js";
 import { buildIssuerEvidence, issuerOriginCapability } from "./issuer-origin.js";
 import { AccountLifecycle } from "./account-lifecycle.js";
 import { issuerAuthorityHash } from "./issuer-proof.js";
@@ -169,7 +172,7 @@ export class VaultService {
     return { idempotencyKey, accepted: true, sequence: receipt.sequence, contentHash: await tokenHash(receipt.content) };
   }
   async pull(accountId: string, auth: Auth, after: number, scope?: "authorizations", capability?: string): Promise<Pull> {
-    if (capability !== undefined && capability !== issuerOriginCapability) throw new Fault(400, "issuer_origin_capability_required");
+    if (capability !== undefined && capability !== issuerOriginCapability && capability !== recoveryAuthorityCapability) throw new Fault(400, "issuer_origin_capability_required");
     if (scope !== undefined && scope !== "authorizations") throw new Fault(400, "scope_invalid");
     if (!Number.isSafeInteger(after) || after < 0) throw new Fault(400, "checkpoint_invalid");
     return this.authenticated(accountId, auth, (account, now) => {
@@ -210,7 +213,7 @@ export class VaultService {
       }
       return structuredClone({ accountId, accountGeneration: account.generation, sequence: account.sequence, grants,
         ...(scope ? { scope } : {}),
-        ...(capability ? { issuerEvidence: targets.size ? buildIssuerEvidence(account, auth.deviceId, sources, [...targets.values()]) : null } : {}),
+        ...(capability ? { issuerEvidence: targets.size ? capability===recoveryAuthorityCapability ? buildIssuerRecoveryEvidence(account as RecoveryAuthorityAccount, auth.deviceId, sources, [...targets.values()]) : buildIssuerEvidence(account, auth.deviceId, sources, [...targets.values()]) : null } : {}),
         environmentEvents, events });
     });
   }

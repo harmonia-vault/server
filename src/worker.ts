@@ -88,7 +88,10 @@ export default {
         try { while (true) { const p = await reader.read(); if (p.done) break; length += p.value.length;
           if (length > bodyLimit(request.method, url.pathname)) { await reader.cancel(); throw new Fault(413, "body_too_large"); } chunks.push(p.value); } }
         finally { reader.releaseLock(); }
-        payload = Buffer.concat(chunks).toString("utf8");
+        const raw=Buffer.concat(chunks);
+        if(/^\/v1\/accounts\/[^/]+\/(recovery-authority-|recovered-|pairings-v4)/.test(url.pathname)){
+          try{payload=new TextDecoder("utf-8",{fatal:true}).decode(raw);}catch{throw new Fault(400,"json_invalid");}
+        }else payload=raw.toString("utf8");
       }
       if (url.pathname === "/v1/register" && request.method === "POST") {
         if (env.ALLOW_REGISTRATION !== "true") throw new Fault(403, "registration_disabled");

@@ -1,3 +1,4 @@
+import type { EnrollmentApprovalV4 } from "./issuer-recovery.js";
 import type { EnrollmentApprovalV3 } from "./issuer-origin.js";
 import type { EnrollmentApprovalV2 } from "./issuer-proof.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -25,13 +26,13 @@ export interface EnrollmentCertificate {
   approverSignature: string; initiatorSignature?: string;
 }
 export interface PairingRecord {
-  idempotencyKey: string; initiatorSessionHash: string; context: PairingContext; certificateVersion?: "2" | "3";
+  idempotencyKey: string; initiatorSessionHash: string; context: PairingContext; certificateVersion?: "2" | "3" | "4";
   messages: Partial<Record<"initiator" | "approver", string>>; confirmations: Partial<Record<"initiator" | "approver", string>>;
-  approval?: EnrollmentCertificate | EnrollmentApprovalV2 | EnrollmentApprovalV3; sequence?: number;
+  approval?: EnrollmentCertificate | EnrollmentApprovalV2 | EnrollmentApprovalV3 | EnrollmentApprovalV4; sequence?: number;
 }
 export type EnrollmentAccount = Account & {
   trustRoot?: TrustRoot; vaultInitializations?: Record<string, InitializationRecord>;
-  pairingSessions?: Record<string, PairingRecord>; deviceEnrollments?: Record<string, EnrollmentCertificate | EnrollmentApprovalV2 | EnrollmentApprovalV3>;
+  pairingSessions?: Record<string, PairingRecord>; deviceEnrollments?: Record<string, EnrollmentCertificate | EnrollmentApprovalV2 | EnrollmentApprovalV3 | EnrollmentApprovalV4>;
 };
 export function exact(value: unknown, fields: string[]): asserts value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join("|") !== [...fields].sort().join("|")) throw new Fault(400, "fields_invalid");
