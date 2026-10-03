@@ -1,3 +1,4 @@
+import { pendingPairingsRoute } from "./http-pending-pairings.js";
 import { instanceInfo } from "./registration.js";
 import { recoveryAuthorityRoute } from "./http-recovery-authority.js";
 import { Fault, type Auth, type SignedGrant, type SignedMutation } from "./model.js";
@@ -53,6 +54,8 @@ export async function route(request: Request, service: VaultService): Promise<Re
     } else {
       const account = await accountRoute(request, service.accountLifecycle());
       if (account.handled) return Response.json(account.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+      const pending = await pendingPairingsRoute(request, service.store);
+      if (pending.handled) return Response.json(pending.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
       const enrollment = await enrollmentRoute(request, service);
       if (enrollment.handled) return Response.json(enrollment.result, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
       const environment = await environmentRoute(request, service.store);

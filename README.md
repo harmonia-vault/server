@@ -47,6 +47,8 @@ HARMONIA_DATABASE=/tmp/harmonia-local-test/harmonia.sqlite mise exec -- pnpm sta
 3. 设备必须用本地账号、代际、设备 ID、登录 token 的 SHA256、挑战 ID、nonce 和期限重建固定用途数组，精确比对返回 `signingPayload` 后再对其 UTF-8 `JSON.stringify` 签 Ed25519，避免盲签不可信用途，提交 `POST .../device-sessions`，JSON `{challengeId,signature}`。挑战绑定账号、代际、设备、公钥登记状态、登录会话和用途，120 秒内单次使用；成功后发行新的设备绑定 token。
 4. 使用设备绑定 token 执行 `GET .../pull?after=0`、`POST .../mutations` 或 `POST .../grants`。所有请求重新检查当前授权。
 
+App 前台可用 `GET .../pairing-requests-v3` 或 `.../pairing-requests-v4` 拉取仅当前管理设备的有效未完成配对提示；版本与能力固定，最多64项，不含短码或中继。`pending` 可提示一次，`approved` 避免再次邀请审批；真实批准仍走原 PAKE/签名机制。字段与权限见 [待审批提示](docs/PENDING-PAIRINGS.md)。
+
 写入请求为 `{mutation,signature}`，授权请求为 `{grant,signature}`，内部字段与签名编码见 protocol 仓库。返回 `{sequence,replayed}`。成功后必须通过拉取结果更新客户端状态。
 
 暂停模式可请求 `GET .../pull?after=<authorizationSequence>&scope=authorizations`：返回 `scope:"authorizations"`、当前 `grants`、签名 `environmentEvents`，普通 `events` 为空。授权检查点独立于数据检查点，暂停刷新不应用变量或推进数据序号；恢复时如授权检查点领先，须全量补拉。环境删除墓碑按接受时主体列表下发，即使当前 grant 已清除也能停止旧来源；其他历史环境事件须重新检查当前可读权限。轮换事件保留完整签名 manifest，可能包含密文，仅用于校验和生命周期处理，不能在暂停时应用其中变量。

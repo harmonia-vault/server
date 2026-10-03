@@ -33,7 +33,7 @@ function manager(a: Account, auth: Auth, hash: string, now: number): void {
   if (current.deviceId !== auth.deviceId) throw new Fault(403, "device_proof_required");
   if (!Object.keys(a.environments).some(id => { try { return permission(a, auth.deviceId, id, now).role === "admin"; } catch { return false; } })) throw new Fault(403, "admin_required");
 }
-function approvalStillValid(a: EnrollmentAccount, r: PairingRecord, grants: SignedGrant[], now: number): void {
+export function approvalStillValid(a: EnrollmentAccount, r: PairingRecord, grants: SignedGrant[], now: number): void {
   const c = r.context;
   device(a, c.approverDeviceId);
   const d = own(a.devices, c.approverDeviceId)!;

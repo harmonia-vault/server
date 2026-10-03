@@ -138,3 +138,14 @@ MIT 源码可审阅，不应将以上局部通过描述为生产安全验收。
 新增实例权威只存不可逆首次决定与opaque赢家ID；账号凭据、证明和激活进度只有账号Store一份，D1仍仅email/account_id路由。跨DO采用耐久证明/决定/幂等激活，不声称跨DO事务。旧缺字段grandfather与冻结的verificationRequiredAtRegistration在同账号存储核验，账号1MB容量及Argon参数未变。
 
 本批没有重跑Docker smoke或Wrangler dry-run，没有真实邮件投递、Cloudflare远端创建/部署、DAG HTTPmajor2开放、CI或Release。手机连接/注册/审批CLI真实产品用户链由独立后续验收记录，本批15项不代替它。接口、迁移与故障恢复见 [连接与注册](REGISTRATION.md)。
+
+
+## 后续前台待审批元数据
+
+本节独立于注册策略 0454d8a 的 245 项与空实例测试入口 909d498 公开基线。2026-10-03 04:35 UTC 查验 `mise run check`：255/255 通过，0 失败、0 跳过、0 取消；typecheck 与生产 build 通过。任务总时长38.86秒，测试约38.51秒；本地 workerd 固定 Argon2id 64 MiB/3 次首次登录约1526ms，仅是本地测量。日志在本机 `/tmp/harmonia-pending-pairings-fullcheck.log`。
+
+新增 `test/pending-pairings.test.ts` 定向10/10通过，约3.76秒。Node TCP/SQLite 与 workerd HTTP/SQLite DO 各5项，实际接受 v3/v4 配对中继、批准和完成，证明只输出固定最小字段、自己被指定的有效请求，approved不会被误作新pending。覆盖跨账号/其他approver、无设备绑定登录会话、当前RO/降权/撤销/到期、initiator会话失效、代际/双钥变化、approved当前来源变化、64项容量与确定排序，查询不改变持久序号。unknown版本路径404/query400，没有新增major header或版本fallback。
+
+初轮2/8、次轮5/8失败保留：测试把新授权 issuer 沿用了父授权的原签发者而被 enrollment_grant_binding_invalid 拒绝；workerd RPC对象被测试误当作普通JSON副本修改，负例未持久化。修正为真实签发设备和明确JSON字符串快照后8/8通过，没有放松生产签名、版本、权限或期限。扩展容量后9/10，合成重置只改generation而保留旧根签名，被Node持久化不变量拒绝；改为同步清空旧可信根/设备/会话等重置状态后10/10与完整255通过。
+
+接口只复用账号内配对记录与成熟批准来源检查，不另建安全状态、推送权限或通知管道，不改变旧PAKE签名域/解析器。测试入口和负例RPC排除生产build。手机前台提示的真实产品验收尚未跑，没有重跑Docker smoke/Wrangler dry-run、部署或Release；DAG major2 HTTP仍未开放。合同见 [待审批提示](PENDING-PAIRINGS.md)。
