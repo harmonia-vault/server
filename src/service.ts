@@ -159,6 +159,11 @@ export class VaultService {
       // A temporary Admin must not delegate privileges beyond its own lifetime.
       if (authority.expiresAt !== "0" && (g.expiresAt === "0" || BigInt(g.expiresAt) > BigInt(authority.expiresAt))) throw new Fault(403, "expiry_escalation");
       verify(account.devices[auth.deviceId]!.signingPublicKey, encoded, signed.signature);
+      // 原签域的DAG账号写授权也逐次核已接受来源与目标历史身份；不从目录TOFU。
+      if (DAGRequired(account as RecoveryDAGAccount)) {
+        const source=account.grants[grantKey(g.environmentId,auth.deviceId)]!;
+        buildIssuerRecoveryDAGEvidence(account as RecoveryDAGAccount,auth.deviceId,[source],[source],[g.subjectDeviceId]);
+      }
       const key = `grant/${g.issuerDeviceId}/${g.idempotencyKey}`;
       const content = Buffer.from(encoded).toString("base64url") + "." + signed.signature;
       const prior = idempotent(account, key, content); if (prior) return prior;
