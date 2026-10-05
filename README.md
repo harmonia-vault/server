@@ -1,85 +1,50 @@
-# Harmonia / 和弦 — server
+# Harmonia Server
 
-多设备环境变量同步的 TypeScript 服务端，采用 MIT 许可证。当前是实验性实现，尚不具备生产使用条件。
+Harmonia（和弦）的自托管服务端，让手机与电脑之间的环境变量保持同步。你可以在手机上管理变量，为不同设备分配所需的环境和权限，并将数据保存在自己的服务中。
 
-设计目标与里程碑见 [workspace](https://github.com/harmonia-vault/workspace)。本仓库只保存源码、文档和合成测试数据。
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/harmonia-vault/server)
 
-## 当前可测试能力
+## 项目用途
 
-- Node SQLite 与每账号 SQLite Durable Object 调用相同业务逻辑；D1 只做邮箱到账号的目录。
-- 每次请求检查账号代际、登录会话、设备持钥会话、设备状态及环境授权；支持 RO / RW / Admin、期限和管理签名降权/撤销。
-- 既有设备授权管理有独立控制投影，保留 none/已过期/旧钥匙版本和最高授权代际；本人原签名授权及全局撤销可查询精确摘要回执。接口与未知结果规则见 [授权管理](docs/GRANT-MANAGEMENT.md)。
-- 验证协议 v1 设备写入签名与管理授权签名；服务端保存密文，不解密变量。历史事件附接受时的签名授权快照。
-- 事务内按服务器接受顺序分配序号；同设备、同幂等 ID 和同内容重试返回原序号，修改内容则拒绝。SQLite 重启后继续拉取补漏。
-- 客户端 SHA256 密码等价凭据在服务端用独立随机盐和 Argon2id（64 MiB、3 次、并行度 1）验证。Node 使用 hash-wasm，Workers 使用成熟的 noble/hashes 实现，相同参数互操作。
-- 已登记设备可用独立开机挑战取得设备绑定会话，无需密码登录；单次 nonce、两公钥、当前授权和账号代际在服务端重新核验。
-- 恢复码持钥取得受限会话；完整封套、新两公钥及新码重签的固定可信根一起原子轮换，支持幂等状态查询。恢复来源图可核验非根新增环境、跨版本历史及全部设备撤销后的数据来源，合同与独立证据见 [完整恢复来源](docs/RECOVERY-SOURCES.md)；每个环境包括空环境都须先核验 [恢复封套签名承诺](docs/RECOVERY-ENVELOPES.md)，不能以 HPKE 成功替代。协议与限制见 [恢复协议](https://github.com/harmonia-vault/protocol/blob/main/docs/RECOVERY.md) 和 [开机会话](https://github.com/harmonia-vault/protocol/blob/main/docs/BOOT-SESSION.md)。
-- 连续恢复授权新增明确双签过渡、原包查询和显式恢复设备登记；新设备仍需开机持钥与验证拉取。恢复来源通过 proof3/v4 配对归档继续委派，旧断链不能由根元数据自动逃逸。接口、实测与未接范围见 [连续恢复授权](docs/RECOVERY-AUTHORITY.md)。 已登记恢复设备的环境/授权管理通过显式 Proof3 控制与独立环境 v3 提交接入，详见 [恢复设备管理](docs/RECOVERED-MANAGEMENT.md)。
-- 重复恢复的独立平坦 DAG 编码、历史链与证书 v5 核验已完成本地向量回归；新 HTTP/major 协商和第二次恢复产品链尚未接入，范围见 [平坦恢复内核](docs/RECOVERY-DAG.md)。
-- 邮箱验证与邮件证明的破坏性重置采用同一账号事务；旧权限/会话和 vault 原子失效，支持结果查询与幂等重试。Node 使用严格 TLS SMTP，Workers 使用官方 EmailService 绑定，测试不发送真实邮件。配置与接口见 [邮箱说明](docs/EMAIL.md)。
-- WebSocket 只发送持久序号提示，使用请求头单次票据与逐次当前授权检查；断线仍按原拉取序号补漏。本人写入收据可核验丢失响应后的接受状态。接口见 [通知与结果查询](docs/NOTIFICATIONS.md)。
-- 管理签名支持环境创建、密文名称修改、删除、完整密钥轮换和全局设备撤销；写入后经相同持久序号拉取下发。非根管理者可通过独立来源签名证明新环境与跨版本权限；v3 配对、完整接收者控制面和恢复原初始化锚见 [来源与 v3](docs/ENROLLMENT-V3.md)。接口与容量边界见 [环境生命周期](docs/ENVIRONMENTS.md)。
+- **集中管理环境变量**：按项目或用途组织环境，在已授权设备间同步更新。
+- **按设备分配权限**：为设备选择可访问的环境，设置只读、读写或管理权限，以及有效期；需要时可撤销授权。
+- **加密存储**：变量在客户端加密，服务端存储和同步密文，不解密变量内容。
+- **自主托管**：使用自己的服务地址，配合 [Harmonia 手机端](https://github.com/harmonia-vault/mobile)和[命令行客户端](https://github.com/harmonia-vault/core-go)使用。
 
-## 本机开发
+## 一键部署到 Workers
 
-```sh
-mise install
-mise exec -- pnpm install --frozen-lockfile
-mise run check
-```
+准备好 Cloudflare 和 GitHub 账号，然后点击上方 **Deploy to Cloudflare** 按钮。
 
-依赖构建脚本只批准 esbuild 和 workerd，并记录在 pnpm-workspace.yaml。
+1. **准备邮件服务**：在 [Cloudflare Email Service](https://developers.cloudflare.com/email-service/) 中启用并验证发信域名，用于发送邮箱验证和账号重置邮件。
+2. **创建服务**：在部署向导中连接 GitHub，选择 Cloudflare 账号，确认新仓库和 Worker 的名称。向导会复制本仓库并创建所需资源。
+3. **填写配置**：保留 `EMAIL` 邮件发送绑定，将 `EMAIL_FROM` 填为已验证域名下的发件地址；其余选项见下表。
+4. **获取地址**：部署完成后，复制 Worker 的 HTTPS 地址，例如 `https://harmonia-server.<你的子域名>.workers.dev`，供客户端连接。
 
-Node 调试使用隔离数据库目录，不导入真实环境变量或凭据：
+部署流程详见 [Cloudflare 官方说明](https://developers.cloudflare.com/workers/platform/deploy-buttons/)。新仓库会连接 Workers Builds，后续推送到生产分支会自动更新服务。
 
-```sh
-HARMONIA_DATABASE=/tmp/harmonia-local-test/harmonia.sqlite mise exec -- pnpm start
-```
+## 配置
 
-默认仅监听 `127.0.0.1:8787`；远程明文监听被拒绝。供其他设备访问时必须由本机或共享网络命名空间内的 TLS 代理提供 HTTPS。本轮没有配置或部署代理。`HARMONIA_PORT` 可更改本地端口；`HARMONIA_DATABASE` 指向单实例持久卷数据库。
+在部署向导或 Worker 设置中配置以下变量：
 
-普通注册默认关闭，要求新注册验证邮箱默认开启；从未完成首次注册的实例仍允许竞争首个账号，没有额外 token 或邀请。两个开关为 `HARMONIA_ALLOW_REGISTRATION` 与 `HARMONIA_REQUIRE_EMAIL_VERIFICATION`。验证要求在每个账号注册时固定：之后开启验证不锁已有未验证账号，之后关闭验证不免除原待验证要求。待验证邮箱不独占首号，完成证明后由实例权威原子决定赢家；首次标记不因 reset 或删空账号重开。公开 `GET /instance-info` 提供产品/协议与三项最小注册能力，完整合同、故障恢复和先注册再公开的顺序见 [连接与注册](docs/REGISTRATION.md)。
+| 变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `EMAIL_FROM` | 未设置 | 邮件发件地址，例如 `noreply@example.com`。只填邮箱地址，须使用已启用 Email Service 的域名。 |
+| `ALLOW_REGISTRATION` | `false` | 是否允许新用户注册。设为 `true` 后开放注册；关闭时，空实例仍允许注册首个账号。 |
+| `REQUIRE_EMAIL_VERIFICATION` | `true` | 新注册账号是否必须验证邮箱。保持开启时，须先配置好邮件服务。 |
 
-## API 与设备持钥证明
+首次部署后，请先完成自己的账号注册，再分享服务地址。邮箱验证要求在账号注册时确定，之后修改配置不会取消已有待验证账号的验证要求。
 
-1. `POST /v1/login`，JSON 为 `{email, credential}`；`credential` 是客户端固定 SHA256 的小写十六进制。返回登录 token、账号 ID 和代际。登录不建立设备信任。
-2. 用登录 token 请求 `POST /v1/accounts/{id}/device-challenges`，JSON `{}`。请求头带 `Authorization: Bearer ...`、`X-Harmonia-Device-Id`、`X-Harmonia-Account-Generation`。
-3. 设备必须用本地账号、代际、设备 ID、登录 token 的 SHA256、挑战 ID、nonce 和期限重建固定用途数组，精确比对返回 `signingPayload` 后再对其 UTF-8 `JSON.stringify` 签 Ed25519，避免盲签不可信用途，提交 `POST .../device-sessions`，JSON `{challengeId,signature}`。挑战绑定账号、代际、设备、公钥登记状态、登录会话和用途，120 秒内单次使用；成功后发行新的设备绑定 token。
-4. 使用设备绑定 token 执行 `GET .../pull?after=0`、`POST .../mutations` 或 `POST .../grants`。所有请求重新检查当前授权。
+## 开始使用
 
-App 前台可用 `GET .../pairing-requests-v3` 或 `.../pairing-requests-v4` 拉取仅当前管理设备的有效未完成配对提示；版本与能力固定，最多64项，不含短码或中继。`pending` 可提示一次，`approved` 避免再次邀请审批；真实批准仍走原 PAKE/签名机制。字段与权限见 [待审批提示](docs/PENDING-PAIRINGS.md)。
+1. 在 Harmonia 手机端填写你的 **HTTPS 服务地址**，注册账号并按提示完成邮箱验证。
+2. 按提示初始化账号，妥善保存恢复码，并完成确认。
+3. 创建环境并添加变量。在电脑的命令行客户端连接同一服务地址，发起设备配对。
+4. 在手机上核对配对请求，选择允许访问的环境、权限和有效期。批准后，在电脑上选择要启用的环境，即可同步使用。
 
-写入请求为 `{mutation,signature}`，授权请求为 `{grant,signature}`，内部字段与签名编码见 protocol 仓库。返回 `{sequence,replayed}`。成功后必须通过拉取结果更新客户端状态。
+服务地址填写基础地址即可，无需添加 `/v1` 等接口路径。日常管理通过手机端和命令行客户端完成。
 
-暂停模式可请求 `GET .../pull?after=<authorizationSequence>&scope=authorizations`：返回 `scope:"authorizations"`、当前 `grants`、签名 `environmentEvents`，普通 `events` 为空。授权检查点独立于数据检查点，暂停刷新不应用变量或推进数据序号；恢复时如授权检查点领先，须全量补拉。环境删除墓碑按接受时主体列表下发，即使当前 grant 已清除也能停止旧来源；其他历史环境事件须重新检查当前可读权限。轮换事件保留完整签名 manifest，可能包含密文，仅用于校验和生命周期处理，不能在暂停时应用其中变量。
+当前为实验性软件，暂不建议用于生产环境中的真实秘密。
 
-拉取返回 `{accountId,accountGeneration,sequence,grants,events,environmentEvents}`，每个事件包含 `{sequence,mutation,authorization}`。只下发当前可读环境、当前密钥版本的密文；当前授权快照也包含已过期/撤销授权，便于客户端清除缓存。账号序号不保证对单个设备连续：被过滤的其他环境和授权更新仍占序号。首次获授权、重新获授权或密钥版本变化时，客户端必须 `after=0` 全量重建；不能沿用此前全局 checkpoint。WebSocket 只提示当前持久序号；断线后从本地检查点补拉，定期拉取仍负责漏通知补偿。
+## 许可证
 
-## 集成测试入口
-
-```sh
-mise exec -- pnpm exec tsx tests/synthetic-server.ts
-```
-
-可加 `--capture-email` 捕获仅 `.invalid` 合成邮箱邮件，测试专用 `GET /test/emails` 返回捕获内容；加 `--empty-vault` 保留合成登录账号并清空设备、环境、恢复与可信根，以验收首次初始化。这些开关只存在于测试入口，不进生产构建。
-
-可加 `--recovery-envelopes /tmp/synthetic-envelopes.json` 提供合成 HPKE 封套数组 `[{environmentId,envelope}]`，加 `--with-trust-root` 建立合成恢复码签可信根。输出只含合成测试元数据。
-
-该入口仅监听本机随机端口、建立临时 SQLite，并输出一行 JSON 合成账号和密钥元数据。它不进入生产构建，没有公开 bootstrap 路由；退出时清理数据库。所有密钥为固定合成测试值，只用于跨语言 HTTP / HPKE / AEAD 验收。
-
-## 持久化和容器边界
-
-`Dockerfile` 构建 Node 24 单实例服务，以非 root 用户运行，`/data` 为 SQLite 持久卷，不依赖 Cloudflare。当前服务只监听容器内 loopback，外部端口映射本身不能访问；HTTPS 代理必须共享服务网络命名空间。容器构建/运行通过与否见 [测试记录](docs/TESTING.md)。本轮没有发布镜像或部署服务。
-
-Workers 配置使用每账号 `ACCOUNTS` DO、只存首次决定的 `INSTANCES` DO 与 `DIRECTORY` D1。数据库 ID 是占位值；不要直接部署。自动日志/trace 观测默认关闭，启用前必须验证认证头与正文脱敏。线上资源和 Argon2id 配额尚未验证；本地 workerd 结果不能代替上线验收，也不能据此降低密码参数。
-
-## 未完成的安全与产品门槛
-
-- 首台可信根初始化与 SPAKE2 配对审批业务已接通，验证双设备签名、双向确认和当前管理权限。[多管理 v2](docs/ENROLLMENT-V2.md) 保持原限制；[来源与 v3](docs/ENROLLMENT-V3.md) 已接通新环境/跨 keyVersion 的双父签名来源、当前精确 Admin 重查与控制闭包。真实手机系统密钥保护、强认证 UI、环境建立/轮换的完整用户流程仍待接通。存储强制恢复封套版本完整性。
-- 邮箱验证、破坏性重置、受限恢复与原子轮换内核已实现；真实邮件投递、完整恢复码重输 UI、手机强认证、客户端完整恢复历史授权链验证与用户流程仍待验收。
-- 管理签名和写入签名已验证，完整历史授权链的客户端信任证明、历史接受时间证据及生产限流仍需完善。
-- 单账号文档限制 1 MB，历史与幂等收据计入；超过容量拒绝写入并回滚。环境变更与 v3 配对批准请求体上限 1 MB，v2 配对批准请求上限 262,144 字节，连续恢复过渡/设备提交及 v4 批准专用上限 2 MiB，其他接口上限 100 kB。较大的完整轮换仍可能超过账号总容量，尚未做面向大历史的分表、分页/压缩或快照检查点。
-- 暂未定义独立账号级管理授权，因此当前拒绝删除最后一个环境；可先创建新环境再删除旧环境。不会从密码登录或根公钥字段隐式提升管理权限。
-- 服务端开机持钥续期入口已实现；三平台无人登录启动及系统密钥保护仍需完整验收。当前持钥会话最长一小时。WebSocket 通知已通过本地回归，线上休眠/容量与 TCP 关闭仍待验收；Docker 仅单实例，不支持多副本并发数据库访问。SMTP 隔离 TLS 回归已通过，真实外部邮件服务器与投递未验收。
-
-真实检查结果见 [测试记录](docs/TESTING.md)，明确区分通过、失败与未运行。Docker 隔离测试可在本机镜像构建后运行 `python3 tests/docker-smoke.py`；仅创建随机测试容器和卷，结束后清理。
+[MIT](LICENSE)
