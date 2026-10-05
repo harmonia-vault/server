@@ -1,49 +1,51 @@
 # Harmonia Server
 
-Harmonia（和弦）的自托管服务端，让手机与电脑之间的环境变量保持同步。你可以在手机上管理变量，为不同设备分配所需的环境和权限，并将数据保存在自己的服务中。
+Harmonia（和弦）是一个自托管的环境变量同步工具：在手机上集中管理环境变量，按设备授权，同步到电脑和运行环境中使用。
+
+本仓库是 Harmonia 的服务端，负责账号与数据同步，可一键部署到 Cloudflare Workers。变量在客户端加密后上传，服务端仅保存密文。需配合 [手机端](https://github.com/harmonia-vault/mobile)与[命令行客户端](https://github.com/harmonia-vault/core-go)使用。
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/harmonia-vault/server)
 
-## 项目用途
+## 部署
 
-- **集中管理环境变量**：按项目或用途组织环境，在已授权设备间同步更新。
-- **按设备分配权限**：为设备选择可访问的环境，设置只读、读写或管理权限，以及有效期；需要时可撤销授权。
-- **加密存储**：变量在客户端加密，服务端存储和同步密文，不解密变量内容。
-- **自主托管**：使用自己的服务地址，配合 [Harmonia 手机端](https://github.com/harmonia-vault/mobile)和[命令行客户端](https://github.com/harmonia-vault/core-go)使用。
+需要 Cloudflare 与 GitHub 账号，以及一个用于发信的域名。
 
-## 一键部署到 Workers
-
-准备好 Cloudflare 和 GitHub 账号，然后点击上方 **Deploy to Cloudflare** 按钮。
-
-1. **准备邮件服务**：在 [Cloudflare Email Service](https://developers.cloudflare.com/email-service/) 中启用并验证发信域名，用于发送邮箱验证和账号重置邮件。
-2. **创建服务**：在部署向导中连接 GitHub，选择 Cloudflare 账号，确认新仓库和 Worker 的名称。向导会复制本仓库并创建所需资源。
-3. **填写配置**：保留 `EMAIL` 邮件发送绑定，将 `EMAIL_FROM` 填为已验证域名下的发件地址；其余选项见下表。
-4. **获取地址**：部署完成后，复制 Worker 的 HTTPS 地址，例如 `https://harmonia-server.<你的子域名>.workers.dev`，供客户端连接。
-
-部署流程详见 [Cloudflare 官方说明](https://developers.cloudflare.com/workers/platform/deploy-buttons/)。新仓库会连接 Workers Builds，后续推送到生产分支会自动更新服务。
+1. 在 Cloudflare 中启用 [Email Service](https://developers.cloudflare.com/email-service/) 并验证发信域名，用于发送注册和账号重置验证码。
+2. 点击上方 **Deploy to Cloudflare**，连接 GitHub，确认仓库与 Worker 名称。
+3. 在配置页面将 `EMAIL_FROM` 设为该域名下的发件地址，其余配置见下文。
+4. 部署完成后，记录 Worker 的 HTTPS 地址，例如 `https://harmonia-server.<子域名>.workers.dev`。
 
 ## 配置
 
-在部署向导或 Worker 设置中配置以下变量：
+可在部署页面或 Worker 的 **Settings → Variables and Secrets** 中修改：
 
-| 变量 | 默认值 | 用途 |
+| 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `EMAIL_FROM` | 未设置 | 邮件发件地址，例如 `noreply@example.com`。只填邮箱地址，须使用已启用 Email Service 的域名。 |
-| `ALLOW_REGISTRATION` | `false` | 是否允许新用户注册。设为 `true` 后开放注册；关闭时，空实例仍允许注册首个账号。 |
-| `REQUIRE_EMAIL_VERIFICATION` | `true` | 新注册账号是否必须验证邮箱。保持开启时，须先配置好邮件服务。 |
+| `EMAIL_FROM` | 无（必填） | 发件地址，例如 `noreply@example.com` |
+| `ALLOW_REGISTRATION` | `false` | 是否开放注册；关闭时仅允许注册首个账号 |
+| `REQUIRE_EMAIL_VERIFICATION` | `true` | 注册时是否验证邮箱 |
 
-首次部署后，请先完成自己的账号注册，再分享服务地址。邮箱验证要求在账号注册时确定，之后修改配置不会取消已有待验证账号的验证要求。
+## 使用
 
-## 开始使用
+1. 在手机端填写服务地址，注册账号、保存恢复码，并创建环境和变量。
+2. 在电脑上使用命令行客户端连接同一地址并发起配对，在手机上批准后即可同步。
 
-1. 在 Harmonia 手机端填写你的 **HTTPS 服务地址**，注册账号并按提示完成邮箱验证。
-2. 按提示初始化账号，妥善保存恢复码，并完成确认。
-3. 创建环境并添加变量。在电脑的命令行客户端连接同一服务地址，发起设备配对。
-4. 在手机上核对配对请求，选择允许访问的环境、权限和有效期。批准后，在电脑上选择要启用的环境，即可同步使用。
+详细步骤见 [手机端](https://github.com/harmonia-vault/mobile)与[命令行客户端](https://github.com/harmonia-vault/core-go)。
 
-服务地址填写基础地址即可，无需添加 `/v1` 等接口路径。日常管理通过手机端和命令行客户端完成。
+## 更新
 
-当前为实验性软件，暂不建议用于生产环境中的真实秘密。
+一键部署会在你的 GitHub 账号下创建独立仓库，不会自动同步本仓库的更新，需手动更新：
+
+1. 确认自己的仓库包含 [`.github/workflows/sync-upstream.yml`](https://github.com/harmonia-vault/server/blob/main/.github/workflows/sync-upstream.yml)；如缺失，在相同路径新建该文件并复制内容。
+2. 在 **Actions → 更新服务** 中运行工作流。首次运行会提示完成授权，按提示设置后重新运行。
+3. 按生成的 Pull Request 中的说明合并，Cloudflare 将自动部署新版本。
+
+通过 Fork 部署的仓库，可直接使用 GitHub 的 **Sync fork → Update branch** 更新。
+
+## 注意事项
+
+- 部署后请先注册自己的账号，再分享服务地址。
+- 项目处于实验阶段，请勿用于生产环境的凭据。
 
 ## 许可证
 

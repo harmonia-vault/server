@@ -5,6 +5,19 @@
   "type": "module",
   "license": "MIT",
   "packageManager": "pnpm@11.5.2",
+  "cloudflare": {
+    "bindings": {
+      "EMAIL_FROM": {
+        "description": "填写已验证发信域名下的邮箱，例如 noreply@example.com。"
+      },
+      "ALLOW_REGISTRATION": {
+        "description": "允许其他人注册此服务。"
+      },
+      "REQUIRE_EMAIL_VERIFICATION": {
+        "description": "注册时验证邮箱。"
+      }
+    }
+  },
   "scripts": {
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",

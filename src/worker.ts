@@ -1,11 +1,13 @@
 import { protocolInfoResponse, requestProtocolMajor, withProtocolMajor, protocolMajorHeader } from './protocol-info.js';
-import { SqlRegistrationAuthority, instanceInfo, registrationComplete, type RegistrationAuthority, type RegistrationAdmission, type RegistrationState } from "./registration.js";
+import { SqlRegistrationAuthority, instanceInfo, type RegistrationAuthority, type RegistrationAdmission, type RegistrationState } from "./registration.js";
 import { DurableObject } from "cloudflare:workers";
 import { SqlStore, type Sql } from "./store.js";
 import { VaultService, normalizeEmail } from "./service.js";
-import { bodyLimit, requestAuth, route } from "./http.js";
+import { bodyLimit, faultResponse, requestAuth, route } from "./http.js";
+import { canonicalClientIP, reserveEmailSend, SqlEmailRateLimit, type EmailRateLimit, type EmailLimitDecision } from "./email-rate-limit.js";
 import { NotificationAuthority, notificationPath, type NotificationState } from "./notifications.js";
 import { cloudflareEmail, type EmailTransport } from "./email-transport.js";
+import { normalizeEmailCode } from "./email-code.js";
 import { Fault } from "./model.js";
 import { workerPassword } from "./worker-password.js";
 import { credential, DUMMY_VERIFIER } from "./password.js";
@@ -16,45 +18,37 @@ class DurableSql implements Sql {
   rows(query: string, params: (string | number | null)[] = []): Record<string, unknown>[] { return this.storage.sql.exec(query, ...params).toArray(); }
   transaction<T>(operation: () => T): T { return this.storage.transactionSync(operation); }
 }
-// 全实例首次决定独立于账号；这里没有邮箱、凭据、证明nonce或vault权限副本。
+// 跨账号的注册决定与邮件额度独立于账号；邮件额度只存哈希键和时间。
 export class InstanceRegistry extends DurableObject<Env> {
   private readonly authority: SqlRegistrationAuthority;
-  private migration: Promise<void> | undefined;
-  constructor(ctx: DurableObjectState, env: Env) { super(ctx, env); this.authority = new SqlRegistrationAuthority(new DurableSql(ctx.storage), false); }
-  private async migrateLegacy(): Promise<void> {
-    if ((await this.authority.info()).firstCompleted) return;
-    this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS instance_migration (singleton INTEGER PRIMARY KEY, finished INTEGER NOT NULL)");
-    if (this.ctx.storage.sql.exec<{finished:number}>("SELECT finished FROM instance_migration WHERE singleton=1").toArray()[0]?.finished === 1) return;
-    await this.env.DIRECTORY.prepare("CREATE TABLE IF NOT EXISTS account_directory (email TEXT PRIMARY KEY, account_id TEXT UNIQUE NOT NULL)").run();
-    let cursor = "";
-    while (true) {
-      const page = await this.env.DIRECTORY.prepare("SELECT account_id FROM account_directory WHERE account_id>? ORDER BY account_id LIMIT 16").bind(cursor).all<{ account_id:string }>();
-      for (const row of page.results) {
-        // D1仅候选路由；真实账号Store决定是否是已存在完整账号。
-        if (await this.env.ACCOUNTS.getByName(row.account_id).registrationCompleted(row.account_id)) { this.authority.adopt(row.account_id); return; }
-        cursor = row.account_id;
-      }
-      if (page.results.length < 16) break;
-    }
-    this.ctx.storage.sql.exec("INSERT INTO instance_migration(singleton,finished) VALUES(1,1) ON CONFLICT(singleton) DO UPDATE SET finished=1");
+  private readonly emailLimits: SqlEmailRateLimit;
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    const sql = new DurableSql(ctx.storage);
+    this.authority = new SqlRegistrationAuthority(sql);
+    this.emailLimits = new SqlEmailRateLimit(sql);
   }
-  private async ready(): Promise<void> {
-    this.migration ??= this.migrateLegacy().catch(error => { this.migration = undefined; throw error; });
-    await this.migration;
+  reserveEmail(emailKey: string, ipKey: string | undefined, now: number): Promise<EmailLimitDecision> {
+    return this.emailLimits.reserve(emailKey, ipKey, now);
   }
-  async info(): Promise<RegistrationState> { await this.ready(); return this.authority.info(); }
-  async complete(accountId:string, admissionId:string, mode:RegistrationAdmission["mode"]): Promise<{accepted:boolean}> { await this.ready(); return this.authority.complete(accountId,admissionId,mode); }
+  async info(): Promise<RegistrationState> { return this.authority.info(); }
+  async complete(accountId: string, admissionId: string, mode: RegistrationAdmission["mode"]): Promise<{ accepted: boolean }> { return this.authority.complete(accountId, admissionId, mode); }
 }
 function registrationAuthority(env: Env): RegistrationAuthority {
   if (!env.INSTANCES) throw new Fault(503, "instance_unavailable");
   return env.INSTANCES.getByName("harmonia-instance-v1");
+}
+function emailRateLimit(env: Env): EmailRateLimit {
+  if (!env.INSTANCES) throw new Fault(503, "instance_unavailable");
+  const registry = env.INSTANCES.getByName("harmonia-instance-v1");
+  return { reserve: (email, ip, now) => registry.reserveEmail(email, ip, now) };
 }
 export class AccountVault extends DurableObject<Env> {
   private readonly service: VaultService;
   private readonly notifications: NotificationAuthority;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    const store = new SqlStore(new DurableSql(ctx.storage), { info: () => registrationAuthority(env).info(), complete: (id, admission, mode) => registrationAuthority(env).complete(id, admission, mode) });
+    const store = new SqlStore(new DurableSql(ctx.storage), { info: () => registrationAuthority(env).info(), complete: (id, admission, mode) => registrationAuthority(env).complete(id, admission, mode) }, { reserve: (email, ip, now) => emailRateLimit(env).reserve(email, ip, now) });
     this.notifications = new NotificationAuthority(store);
     store.onCommit(() => this.ctx.waitUntil(this.refreshNotifications()));
     this.service = new VaultService(store, { allowRegistration: env.ALLOW_REGISTRATION === "true", requireEmailVerification: env.REQUIRE_EMAIL_VERIFICATION !== "false" }, undefined, workerPassword, this.mailTransport(env));
@@ -92,13 +86,15 @@ export class AccountVault extends DurableObject<Env> {
   webSocketClose(ws: WebSocket, code: number): void { try { ws.close(code === 4003 ? 4003 : 1000, "closed"); } catch { /* 已关闭 */ } this.ctx.waitUntil(this.refreshNotifications()); }
   webSocketError(ws: WebSocket): void { try { ws.close(1011, "reconnect_required"); } catch { /* 已关闭 */ } this.ctx.waitUntil(this.refreshNotifications()); }
   protected mailTransport(env: Env): EmailTransport | undefined { return cloudflareEmail(env.EMAIL, env.EMAIL_FROM); }
-  registrationCompleted(accountId: string): boolean { const a = this.service.store.read(accountId); return !!a && registrationComplete(a); }
-  async register(accountId: string, email: string, value: string): Promise<{ status: number; headers: Record<string, string>; body: string }> {
-    try { return { status: 200, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify(await this.service.register(email, value, accountId)) }; }
-    catch (error) { const fault = error instanceof Fault ? error : new Fault(500, "internal_error"); return { status: fault.status, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify({ error: fault.code }) }; }
+  async register(accountId: string, email: string, value: string, clientIP = "unknown"): Promise<{ status: number; headers: Record<string, string>; body: string }> {
+    try { return { status: 200, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify(await this.service.register(email, value, accountId, clientIP)) }; }
+    catch (error) {
+      const response = faultResponse(error instanceof Fault ? error : new Fault(500, "internal_error"));
+      return { status: response.status, headers: Object.fromEntries(response.headers), body: await response.text() };
+    }
   }
   // RPC carries request primitives. Security is rechecked inside the account-local transaction.
-  async handle(accountId: string, method: string, url: string, headers: [string, string][], payload: string | null): Promise<{ status: number; headers: Record<string, string>; body: string }> {
+  async handle(accountId: string, method: string, url: string, headers: [string, string][], payload: string | null, clientIP = "unknown"): Promise<{ status: number; headers: Record<string, string>; body: string }> {
     const parsed = new URL(url);
     const routed = parsed.pathname.match(/^\/v1\/accounts\/([^/]+)\//)?.[1];
     if (routed && routed !== accountId) return { status: 403, headers: {}, body: '{"error":"account_binding_invalid"}' };
@@ -110,7 +106,7 @@ export class AccountVault extends DurableObject<Env> {
       return { status: fault.status, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify({ error: fault.code }) };
     }
     const request = new Request(url, { method, headers, ...(payload === null ? {} : { body: payload }) });
-    const response = await route(request, this.service);
+    const response = await route(request, this.service, clientIP);
     return { status: response.status, headers: Object.fromEntries(response.headers), body: await response.text() };
   }
   // 没有直接种入可信设备或绕过邮件证明的重置 RPC；全部业务经统一路由校验。
@@ -118,6 +114,7 @@ export class AccountVault extends DurableObject<Env> {
 async function workerFetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
+      const clientIP = canonicalClientIP(request.headers.get("cf-connecting-ip"));
       if (url.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) throw new Fault(400, "https_required");
       if(url.pathname==="/protocol-info")return protocolInfoResponse(request);
       if (url.pathname === "/instance-info") {
@@ -153,18 +150,24 @@ async function workerFetch(request: Request, env: Env): Promise<Response> {
         await env.DIRECTORY.prepare("INSERT INTO account_directory(email,account_id) VALUES(?,?) ON CONFLICT(email) DO NOTHING").bind(email, candidate).run();
         const reserved = await env.DIRECTORY.prepare("SELECT account_id FROM account_directory WHERE email=?").bind(email).first<{ account_id: string }>();
         if (!reserved) throw new Fault(503, "directory_unavailable");
-        const reply = await env.ACCOUNTS.getByName(reserved.account_id).register(reserved.account_id, email, b.credential);
+        const reply = await env.ACCOUNTS.getByName(reserved.account_id).register(reserved.account_id, email, b.credential, clientIP);
         return new Response(reply.body, { status: reply.status, headers: reply.headers });
       }
       let accountId = url.pathname.match(/^\/v1\/accounts\/([A-Za-z0-9._:-]+)\//)?.[1];
-      if (["/v1/email-verification/request", "/v1/account-reset/request"].includes(url.pathname) && request.method === "POST") {
-        if (!cloudflareEmail(env.EMAIL, env.EMAIL_FROM)) throw new Fault(503, "email_verification_unavailable");
+      if (/^\/v1\/(?:email-verification\/request|account-reset\/(?:request|resolve))$/.test(url.pathname) && request.method === "POST") {
+        const resolving = url.pathname.endsWith("/resolve");
+        if (!resolving && !cloudflareEmail(env.EMAIL, env.EMAIL_FROM)) throw new Fault(503, "email_verification_unavailable");
         if (!request.headers.get("content-type")?.startsWith("application/json")) throw new Fault(415, "json_required");
         let b: unknown; try { b = JSON.parse(payload ?? "null"); } catch { throw new Fault(400, "json_invalid"); }
-        if (!b || typeof b !== "object" || !("email" in b) || typeof b.email !== "string" || Object.keys(b).join("|") !== "email") throw new Fault(400, "fields_invalid");
+        if (!b || typeof b !== "object" || !("email" in b) || typeof b.email !== "string" || Object.keys(b).sort().join("|") !== (resolving ? "code|email" : "email")) throw new Fault(400, "fields_invalid");
+        if (resolving && (!("code" in b) || typeof b.code !== "string" || !normalizeEmailCode(b.code))) throw new Fault(400, "email_code_invalid");
         const row = await env.DIRECTORY.prepare("SELECT account_id FROM account_directory WHERE email=?").bind(normalizeEmail(b.email)).first<{ account_id: string }>();
         accountId = row?.account_id;
-        if (!accountId) return Response.json({ accepted: true }, { headers: { "cache-control": "no-store" } });
+        if (!accountId) {
+          if (resolving) throw new Fault(401, "email_code_invalid");
+          await reserveEmailSend(emailRateLimit(env), normalizeEmail(b.email), clientIP, Math.floor(Date.now() / 1000));
+          return Response.json({ accepted: true }, { headers: { "cache-control": "no-store" } });
+        }
       }
       if (url.pathname === "/v1/login" && request.method === "POST") {
         if (!request.headers.get("content-type")?.startsWith("application/json")) throw new Fault(415, "json_required");
@@ -177,17 +180,16 @@ async function workerFetch(request: Request, env: Env): Promise<Response> {
         if (!accountId) { await workerPassword.verify(b.credential, DUMMY_VERIFIER); throw new Fault(401, "unauthorized"); }
       }
       if (!accountId) throw new Fault(404, "not_found");
-      const reply = await env.ACCOUNTS.getByName(accountId).handle(accountId, request.method, request.url, Array.from(request.headers), payload);
+      const reply = await env.ACCOUNTS.getByName(accountId).handle(accountId, request.method, request.url, Array.from(request.headers), payload, clientIP);
       return new Response(reply.body, { status: reply.status, headers: reply.headers });
     } catch (error) {
       const fault = error instanceof Fault ? error : new Fault(500, "internal_error");
-      return Response.json({ error: fault.code }, { status: fault.status, headers: { "cache-control": "no-store" } });
+      return faultResponse(fault);
     }
 }
 export default { async fetch(request:Request,env:Env):Promise<Response>{
- let major:1|2=1;
- try{major=requestProtocolMajor(request);const response=await workerFetch(request,env);
- if(response.status===101){const headers=new Headers(response.headers);headers.set(protocolMajorHeader,String(major));return new Response(null,{status:101,headers,webSocket:response.webSocket!});}
- return withProtocolMajor(response,major);
- }catch(error){const f=error instanceof Fault?error:new Fault(500,"internal_error");return withProtocolMajor(Response.json({error:f.code},{status:f.status,headers:{"cache-control":"no-store"}}),major);}
+ try{if (!["/protocol-info", "/health"].includes(new URL(request.url).pathname)) requestProtocolMajor(request);const response=await workerFetch(request,env);
+ if(response.status===101){const headers=new Headers(response.headers);headers.set(protocolMajorHeader,"2");return new Response(null,{status:101,headers,webSocket:response.webSocket!});}
+ return withProtocolMajor(response);
+ }catch(error){const f=error instanceof Fault?error:new Fault(500,"internal_error");return withProtocolMajor(Response.json({error:f.code},{status:f.status,headers:{"cache-control":"no-store"}}));}
 } } satisfies ExportedHandler<Env>;

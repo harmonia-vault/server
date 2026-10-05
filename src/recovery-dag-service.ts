@@ -1,19 +1,19 @@
 import { assertRecoveryOperationOpen, assertRecoveryOperationCapacity } from "./recovery-operation-guards.js";
 import { Fault, grantKey, type Session } from './model.js';
-import { bytes, generation, identifier } from './protocol.js';
+import { bytes, generation, identifier, mutationBytes, verify } from './protocol.js';
 import { canonical, exact, own, hash } from './enrollment-wire.js';
 import { device, next, permission, randomToken, sameAccount, session, tokenHash } from './service.js';
 import type { Store } from './store.js';
 import type { RecoveryAuth } from './lifecycle-wire.js';
 import { recoveryManifestHash, type RecoveryAdminAuthority, type RecoveryEnvironmentVersion } from './recovery-authority-wire.js';
 import { issuerAuthorityHash } from './issuer-proof.js';
-import { accountDAGBundle, accountDAGPin, verifiedAccountDAG, buildIssuerRecoveryDAGEvidence, acceptedSourceDAG, type RecoveryDAGAccount } from './recovery-dag-account.js';
+import { accountDAGBundle, accountDAGPin, verifiedAccountDAG, buildIssuerRecoveryDAGEvidence, verifyAcceptedDAGEvidence, acceptedSourceDAG, type RecoveryDAGAccount } from './recovery-dag-account.js';
 import { verifyRecoveryDependencyBundle } from './recovery-dag.js';
 import { initializationDAGRow, recordRow, recordRows, sourceHash, transitionHashV2, recoveredDeviceHashV2, transitionReferencesV2, recoveredReferencesV2, type RecoveryDependencyBundle, type RecoverySource, type RecoveryTransitionCommandV2, type RecoveredDeviceCommandV2, type RecoveryDAGRecord } from './recovery-dag-wire.js';
 import { recoveryEnvelopeEvidence } from './recovery-envelope-evidence.js';
 export interface DAGAuthorityChallenge {
  operationId:string;challengeId:string;nonce:string;expiresAt:number;sessionHash:string;accountGeneration:string;
- authorizationKind:'old-recovery'|'all-environments-admin';chainMode:'continuous';authorizerDeviceId:string;expectedSequence:string;
+ authorizationKind:'old-recovery'|'all-environments-admin';authorizerDeviceId:string;expectedSequence:string;
  previousTransitionHash:string;oldRecoveryGeneration:string;oldRecoverySigningPublicKey:string;oldRecoveryReceivingPublicKey:string;
  environmentManifest:RecoveryEnvironmentVersion[];authoritySet:RecoveryAdminAuthority[];issuerEvidence:RecoverySource|null;
  dependencyBundle:RecoveryDependencyBundle;
@@ -52,7 +52,6 @@ function recoverySources(a:RecoveryDAGAccount):import('./model.js').SignedGrant[
 function priorOperation(a:RecoveryDAGAccount,id:string):RecoveryDAGRecord|undefined {return accountDAGBundle(a).records.find(r=>operation(r)===id);}
 function oldChallengeConflict(a:RecoveryDAGAccount,id:string,kind:'transition'|'recovered'):void {
  if(kind==='transition'?own(a.recoveredDAGChallenges,id):own(a.recoveryDAGChallenges,id))throw new Fault(409,'idempotency_conflict');
- if(own(a.recoveryAuthorityChallenges,id)||own(a.recoveredDeviceChallenges,id)||own(a.recoveryRotations,id))throw new Fault(409,'idempotency_conflict');
 }
 function challengeView(c:DAGAuthorityChallenge|DAGRecoveredChallenge):Record<string,unknown>{return structuredClone(c) as unknown as Record<string,unknown>;}
 /** 唯一账号事务内核对live权限、完整已接受历史、一次nonce后才原子切换。 */
@@ -62,8 +61,8 @@ export class RecoveryDAGService {
   identifier(id);generation(auth.accountGeneration);bytes(auth.token,32);if(auth.deviceId)identifier(auth.deviceId);const h=await tokenHash(auth.token);
   return this.store.transaction(id,account=>{const a=account as RecoveryDAGAccount,now=this.clock(),s=current(a,auth,h,now);return fn(a,s,h,now);});
  }
- async challenge(id:string,auth:RecoveryAuth,input:{operationId:string;authorizationKind:DAGAuthorityChallenge['authorizationKind'];chainMode:'continuous'}):Promise<Record<string,unknown>>{
-  exact(input,['operationId','authorizationKind','chainMode']);identifier(input.operationId);if(!['old-recovery','all-environments-admin'].includes(input.authorizationKind)||input.chainMode!=='continuous')throw new Fault(400,'fields_invalid');
+ async challenge(id:string,auth:RecoveryAuth,input:{operationId:string;authorizationKind:DAGAuthorityChallenge['authorizationKind']}):Promise<Record<string,unknown>>{
+  exact(input,['operationId','authorizationKind']);identifier(input.operationId);if(!['old-recovery','all-environments-admin'].includes(input.authorizationKind))throw new Fault(400,'fields_invalid');
   return this.authorized(id,auth,(a,s,h,now)=>{
    assertRecoveryOperationOpen(a,input.operationId,'transition-v2');
    const dag=verifiedAccountDAG(a);if(input.authorizationKind==='old-recovery'){if(s.kind!=='recovery')throw new Fault(403,'device_proof_required');}
@@ -90,7 +89,7 @@ export class RecoveryDAGService {
    if(prior){if(prior.kind!=='transition-v2'||recordRow(prior)[1]!==contentHash||!c||c.sessionHash!==h||bundleContent(command.dependencyBundle)!==bundleContent(c.dependencyBundle))throw new Fault(409,'idempotency_conflict');return {sequence:prior.record.sequence,replayed:true,transitionHash:contentHash,contentHash};}
    const dag=verifiedAccountDAG(a);
    if(!c||c.sessionHash!==h||c.accountGeneration!==a.generation||c.expiresAt<=now||c.challengeId!==t.challengeId||c.nonce!==t.nonce||String(c.expiresAt)!==t.expiresAt||t.sessionHash!==h||t.accountId!==a.id||t.accountGeneration!==a.generation)throw new Fault(403,'challenge_invalid');
-   if(t.authorizationKind!==c.authorizationKind||t.chainMode!=='continuous'||t.authorizerDeviceId!==c.authorizerDeviceId||t.expectedSequence!==c.expectedSequence||t.expectedSequence!==String(a.sequence)||t.previousTransitionHash!==c.previousTransitionHash||t.previousTransitionHash!==dag.head.head||t.oldRecoveryGeneration!==a.recoveryGeneration||t.oldRecoverySigningPublicKey!==a.recoverySigningPublicKey||t.oldRecoveryReceivingPublicKey!==a.recoveryReceivingPublicKey||!same(manifest(a),c.environmentManifest)||!same(s.environmentManifest,c.environmentManifest)||!same(s.authoritySet,c.authoritySet)||bundleContent(command.dependencyBundle)!==bundleContent(c.dependencyBundle)||bundleContent(command.dependencyBundle)!==bundleContent(accountDAGBundle(a))||s.legacyState!==null||(s.issuerEvidence===null)!==(c.issuerEvidence===null)||(s.issuerEvidence&&sourceHash(s.issuerEvidence)!==sourceHash(c.issuerEvidence!)))throw new Fault(409,'recovery_context_changed');
+   if(t.authorizationKind!==c.authorizationKind||t.authorizerDeviceId!==c.authorizerDeviceId||t.expectedSequence!==c.expectedSequence||t.expectedSequence!==String(a.sequence)||t.previousTransitionHash!==c.previousTransitionHash||t.previousTransitionHash!==dag.head.head||t.oldRecoveryGeneration!==a.recoveryGeneration||t.oldRecoverySigningPublicKey!==a.recoverySigningPublicKey||t.oldRecoveryReceivingPublicKey!==a.recoveryReceivingPublicKey||!same(manifest(a),c.environmentManifest)||!same(s.environmentManifest,c.environmentManifest)||!same(s.authoritySet,c.authoritySet)||bundleContent(command.dependencyBundle)!==bundleContent(c.dependencyBundle)||bundleContent(command.dependencyBundle)!==bundleContent(accountDAGBundle(a))||(s.issuerEvidence===null)!==(c.issuerEvidence===null)||(s.issuerEvidence&&sourceHash(s.issuerEvidence)!==sourceHash(c.issuerEvidence!)))throw new Fault(409,'recovery_context_changed');
    if(t.authorizationKind==='old-recovery'){if(actor.kind!=='recovery')throw new Fault(403,'device_proof_required');}
    else{if(actor.kind!=='login'||auth.deviceId!==t.authorizerDeviceId)throw new Fault(403,'device_proof_required');allAdmin(a,auth.deviceId,now);acceptedSourceDAG(a,s.issuerEvidence!);for(const row of s.authoritySet)if(issuerAuthorityHash(a.grants[grantKey(row.environmentId,auth.deviceId)]!)!==row.authorityHash)throw new Fault(403,'issuer_authority_changed');}
    novel(a,[t.newRecoverySigningPublicKey,t.newRecoveryReceivingPublicKey]);
@@ -148,7 +147,14 @@ export class RecoveryDAGService {
    if(s.kind!=='recovery')allAdmin(a,auth.deviceId!,now);const bundle=accountDAGBundle(a),dag=verifiedAccountDAG(a),sources=recoverySources(a);
    for(const event of a.events)if(a.environments[event.mutation.mutation.environmentId]?.keyVersion===event.mutation.mutation.keyVersion&&!sources.some(g=>issuerAuthorityHash(g)===issuerAuthorityHash(event.authorization)))sources.push(event.authorization);
    const evidence=buildIssuerRecoveryDAGEvidence(a,a.trustRoot!.rootDeviceId,sources,recoveryTargets(a,sources));
-   return structuredClone({accountId:a.id,accountGeneration:a.generation,recoveryGeneration:a.recoveryGeneration,recoverySigningPublicKey:a.recoverySigningPublicKey,recoveryReceivingPublicKey:a.recoveryReceivingPublicKey,rotationRequired:s.kind==='recovery'?s.rotationRequired:false,sequence:a.sequence,dependencyBundle:bundle,issuerEvidence:evidence,trustRoot:a.trustRoot,publicDevices:Object.values(a.devices),currentGrants:Object.values(a.grants),grantHistory:a.grantHistory??[],environments:Object.values(a.environments).map(e=>({environmentId:e.id,keyVersion:e.keyVersion,envelope:e.recoveryEnvelope})),events:a.events.filter(event=>event.mutation.mutation.keyVersion===a.environments[event.mutation.mutation.environmentId]?.keyVersion),envelopeEvidence:recoveryEnvelopeEvidence(a),recoveryHeadHash:dag.head.head});
+   const graph=evidence&&verifyAcceptedDAGEvidence(a,evidence).graph;
+   const events=a.events.filter(event=>event.mutation.mutation.keyVersion===a.environments[event.mutation.mutation.environmentId]?.keyVersion);
+   for(const event of events){
+    const m=event.mutation.mutation,g=event.authorization.grant,actor=graph?.identities.get(m.deviceId),accepted=graph?.authorities.get(issuerAuthorityHash(event.authorization));
+    if(!actor||!accepted||m.accountId!==a.id||m.accountGeneration!==a.generation||g.subjectDeviceId!==m.deviceId||g.environmentId!==m.environmentId||g.keyVersion!==m.keyVersion||g.grantGeneration!==m.grantGeneration||!['admin','rw'].includes(g.role)||!Number.isSafeInteger(event.sequence)||event.sequence<=0||event.sequence>a.sequence)throw new Fault(403,'binding_invalid');
+    verify(actor.signing,mutationBytes(m),event.mutation.signature);
+   }
+   return structuredClone({accountId:a.id,accountGeneration:a.generation,recoveryGeneration:a.recoveryGeneration,recoverySigningPublicKey:a.recoverySigningPublicKey,recoveryReceivingPublicKey:a.recoveryReceivingPublicKey,rotationRequired:s.kind==='recovery'?s.rotationRequired:false,sequence:a.sequence,dependencyBundle:bundle,issuerEvidence:evidence,trustRoot:a.trustRoot,publicDevices:Object.values(a.devices),currentGrants:Object.values(a.grants),grantHistory:a.grantHistory??[],environments:Object.values(a.environments).map(e=>({environmentId:e.id,keyVersion:e.keyVersion,envelope:e.recoveryEnvelope})),events,envelopeEvidence:recoveryEnvelopeEvidence(a),recoveryHeadHash:dag.head.head});
   });
  }
 }

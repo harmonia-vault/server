@@ -1,5 +1,5 @@
 import { Fault, type SignedGrant } from './model.js';
-import { own, type EnrollmentCertificate } from './enrollment-wire.js';
+import { own } from './enrollment-wire.js';
 import { originalInitialization } from './initialization-evidence.js';
 import { initializationReference } from './recovery-authority-wire.js';
 import { issuerAuthorityHash } from './issuer-proof.js';
@@ -7,14 +7,14 @@ import { environmentOriginHash, environmentOriginBytes, type SignedEnvironmentOr
 import { environmentChangeHash } from './environment-origin.js';
 import { environmentChangeBytes } from './environments.js';
 import { verify } from './protocol.js';
-import { archivedRecoveryEnrollment, type IssuerRecoveryAuthority } from './issuer-recovery.js';
-import type { RecoveryAuthorityAccount } from './recovery-authority.js';
+import { type IssuerRecoveryAuthority } from './issuer-recovery.js';
+import type { EnrollmentAccount } from './enrollment-wire.js';
 import { verifyRecoveryDependencyBundle, verifyIssuerRecoveryDAG, type VerifiedRecoveryDAG, type RecoveryDAGPin } from './recovery-dag.js';
 import { dagHash, dagArchiveFields, dagPathRows, recordRow, sourceHash, issuerRecoveryDAGProfile, recoverySourceViewProfile, type RecoveryDAGRecord, type RecoveryDependency, type RecoveryDependencyBundle, type RecoverySource, type DAGArchive, type DAGPairedEnrollment, type IssuerRecoveryDAG } from './recovery-dag-wire.js';
 import { type EnrollmentApprovalV5 } from './issuer-dag.js';
 import { trustRootPayload } from './trust-root.js';
-export type RecoveredRecord = Extract<RecoveryDAGRecord,{kind:'recovered-v1'|'recovered-v2'}>;
-export interface RecoveryDAGAccount extends RecoveryAuthorityAccount {
+export type RecoveredRecord = Extract<RecoveryDAGRecord,{kind:'recovered-v2'}>;
+export interface RecoveryDAGAccount extends EnrollmentAccount {
   recoveryDAGHistory?: Extract<RecoveryDAGRecord,{kind:'transition-v2'|'recovered-v2'}>[];
   recoveryDAGChallenges?: Record<string, import('./recovery-dag-service.js').DAGAuthorityChallenge>;
   recoveredDAGChallenges?: Record<string, import('./recovery-dag-service.js').DAGRecoveredChallenge>;
@@ -23,10 +23,9 @@ export interface RecoveryDAGAccount extends RecoveryAuthorityAccount {
 }
 function fail(code='recovery_dag_invalid'):never {throw new Fault(403,code);}
 const b64=(b:Uint8Array):string=>Buffer.from(b).toString('base64url');
-export function DAGRequired(a:RecoveryDAGAccount):boolean{return (a.recoveryDAGHistory?.length??0)>0 || Object.keys(a.dagDeviceEnrollments??{}).length>0;}
 export function accountDAGBundle(a:RecoveryDAGAccount):RecoveryDependencyBundle {
  const initialization=originalInitialization(a);if(!initialization)fail('initialization_evidence_required');
- const records:RecoveryDAGRecord[]=[...(a.recoveryAuthorityTransitions??[]).map(record=>({kind:'transition-v1' as const,record})),...Object.values(a.recoveredDevices??{}).map(record=>({kind:'recovered-v1' as const,record})),...(a.recoveryDAGHistory??[])];
+ const records:RecoveryDAGRecord[]=a.recoveryDAGHistory??[];
  return structuredClone({initialization,records});
 }
 export function accountDAGPin(a:RecoveryDAGAccount):RecoveryDAGPin {
@@ -38,9 +37,8 @@ export function verifiedAccountDAG(a:RecoveryDAGAccount):VerifiedRecoveryDAG {
  if(h.sequence>a.sequence || h.generation!==a.recoveryGeneration || h.signing!==a.recoverySigningPublicKey || h.receiving!==a.recoveryReceivingPublicKey || !a.trustRoot || JSON.stringify(trustRootPayload(a.id,a.generation,h.root))!==JSON.stringify(trustRootPayload(a.id,a.generation,a.trustRoot)) || h.root.signature!==a.trustRoot.signature)fail('recovery_chain_invalid');
  return d;
 }
-function storedDAGArchive(a:RecoveryDAGAccount,id:string):EnrollmentCertificate|EnrollmentApprovalV5|undefined{return own(a.dagDeviceEnrollments,id)??own(a.deviceEnrollments,id);}
-function archiveDAGEnrollment(c:EnrollmentCertificate|EnrollmentApprovalV5):DAGPairedEnrollment {
- if(!('certificateVersion' in c)||c.certificateVersion!=='5')return archivedRecoveryEnrollment(c as Parameters<typeof archivedRecoveryEnrollment>[0]);
+function storedDAGArchive(a:RecoveryDAGAccount,id:string):EnrollmentApprovalV5|undefined{return own(a.dagDeviceEnrollments,id);}
+function archiveDAGEnrollment(c:EnrollmentApprovalV5):DAGPairedEnrollment {
  if(!c.initiatorSignature)fail('issuer_archive_mismatch');
  return {certificateVersion:'5',issuerProofHash:dagHash(c.issuerProof),approval:{context:structuredClone(c.context),pairingProfile:c.pairingProfile,transcriptHash:c.transcriptHash,grants:structuredClone(c.grants),approverSignature:c.approverSignature,initiatorSignature:c.initiatorSignature}};
 }
@@ -57,7 +55,7 @@ export function verifyAcceptedDAGEvidence(a:RecoveryDAGAccount,p:IssuerRecoveryD
  if(result.dag.head.head!==full.head.head || result.dag.head.sequence!==full.head.sequence)fail('recovery_chain_invalid');
  const accepted=full.records;
  for(const [h,n] of result.dag.records){const old=accepted.get(h);if(!old || old.sequence!==n.sequence || JSON.stringify(old.wire)!==JSON.stringify(n.wire))fail('issuer_archive_mismatch');}
- for(const n of [...(p.source.kind==='proof2'?p.source.proof.path.map(enrollment=>({kind:'paired' as const,enrollment})):p.source.view.path),...(p.source.kind==='proof2'?p.source.proof.identityPaths.map(path=>path.map(enrollment=>({kind:'paired' as const,enrollment}))):p.source.view.identityPaths).flat()]){
+ for(const n of [...p.source.view.path, ...p.source.view.identityPaths.flat()]){
   if(n.kind==='recovered'){if(!accepted.has(n.recoveryEnrollmentHash))fail('issuer_archive_mismatch');continue;}
   const c=storedDAGArchive(a,n.enrollment.approval.context.initiatorDeviceId);if(!c)fail('issuer_archive_mismatch');const archive=archiveDAGEnrollment(c);
   if(JSON.stringify(dagArchiveFields(archive))!==JSON.stringify(dagArchiveFields(n.enrollment)) || archive.approval.approverSignature!==n.enrollment.approval.approverSignature || archive.approval.initiatorSignature!==n.enrollment.approval.initiatorSignature)fail('issuer_archive_mismatch');

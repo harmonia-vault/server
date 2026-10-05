@@ -3,7 +3,9 @@ import type { Account } from "./model.js";
 import { Fault } from "./model.js";
 import { SqlRegistrationAuthority, validateRegistration, registrationVerificationRequired, type RegistrationAuthority } from "./registration.js";
 import { validateRecoveryState } from "./lifecycle-wire.js";
+import { SqlEmailRateLimit, type EmailRateLimit } from "./email-rate-limit.js";
 export interface Store {
+  readonly emailRateLimit: EmailRateLimit;
   readonly registrationAuthority: RegistrationAuthority;
   create(account: Account): void;
   byEmail(email: string): string | undefined;
@@ -19,21 +21,23 @@ export interface Sql {
 // A single versioned account row keeps credentials, permissions and events in one atomic domain.
 // M1 uses a bounded account document; a normalized event table is a later scaling step.
 export class SqlStore implements Store {
+  readonly emailRateLimit: EmailRateLimit;
   readonly registrationAuthority: RegistrationAuthority;
   private readonly listeners = new Set<(accountId: string) => void>();
   onCommit(listener: (accountId: string) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private document(account: Account): string {
+    validateAccountSchema(account);
     validateRecoveryOperationClosures(account);
     validateRegistration(account);
-    account.verificationRequiredAtRegistration ??= false;
     validateRecoveryState(account);
     const data = JSON.stringify(account);
     if (Buffer.byteLength(data) > 1_000_000) throw new Fault(503, "account_capacity_reached");
     return data;
   }
-  constructor(private readonly sql: Sql, authority?: RegistrationAuthority) {
+  constructor(private readonly sql: Sql, authority?: RegistrationAuthority, emailRateLimit?: EmailRateLimit) {
     sql.execute("CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, data TEXT NOT NULL)");
     this.registrationAuthority = authority ?? new SqlRegistrationAuthority(sql);
+    this.emailRateLimit = emailRateLimit ?? new SqlEmailRateLimit(sql);
   }
   create(account: Account): void {
     this.sql.transaction(() => {
@@ -48,7 +52,9 @@ export class SqlStore implements Store {
     const row = this.sql.rows("SELECT data FROM accounts WHERE id=?", [accountId])[0];
     if (!row) return undefined;
     const account = JSON.parse(String(row.data)) as Account;
+    validateAccountSchema(account);
     validateRecoveryOperationClosures(account);
+    validateRegistration(account);
     return account;
   }
   transaction<T>(accountId: string, operation: (account: Account) => T): T {
@@ -66,4 +72,8 @@ export class SqlStore implements Store {
     if (changed) for (const listener of this.listeners) { try { listener(accountId); } catch { /* 下次拉取仍可补漏 */ } }
     return result;
   }
+}
+
+function validateAccountSchema(account: Account): void {
+  if (account.schema !== 2 || ["pairingSessions", "deviceEnrollments", "recoveryRotations", "recoveryAuthorityTransitions", "recoveryAuthorityChallenges", "recoveredDeviceChallenges", "recoveredDevices"].some(key => Object.hasOwn(account, key))) throw new Fault(409, "account_format_unsupported");
 }

@@ -24,7 +24,7 @@ export const dagCap = 'capability=issuer-recovery-dag-v1';
 export const resolutionPath = '/recovery-operation-resolutions-v1?capability=recovery-operation-closure-v1';
 export const localEd = Buffer.alloc(32, 101), localX = Buffer.alloc(32, 102);
 export type Reply = {status: number; major: string | null; data: any};
-const vector = JSON.parse(readFileSync(new URL('./vectors/recovery-authority-v1.json', import.meta.url), 'utf8'));
+const vector = JSON.parse(readFileSync(new URL('./vectors/recovery-dag-v1.json', import.meta.url), 'utf8'));
 let built: Promise<string> | undefined;
 export async function closureHarness(runtime: 'NodeTCP' | 'workerd') {
   const original = await nodeHarness(); const account = structuredClone(original.read()) as RecoveryOperationAccount; await original.close();
@@ -59,10 +59,10 @@ export async function closureHarness(runtime: 'NodeTCP' | 'workerd') {
     const headers = {'content-type': 'application/json', authorization: 'Bearer '+tokens.get(who), 'x-harmonia-account-generation': options.generation ?? '1', ...(who === 'A' ? {'x-harmonia-device-id': 'device-A'} : {}), ...((options.major ?? '2') ? {'Harmonia-Protocol-Major': options.major ?? '2'} : {})};
     const init = {method, headers, ...(body === undefined && options.raw === undefined ? {} : {body: options.raw ?? JSON.stringify(body)})};
     const response = runtime === 'NodeTCP' ? await fetch((options.peer ? peerBase : base)+`/v1/accounts/${account.id}`+path,init) : await mf!.dispatchFetch(`https://synthetic.invalid/v1/accounts/${account.id}${path}`,init);
-    const major=response.headers.get('Harmonia-Protocol-Major');assert.equal(major,options.major??'2');
+    const major=response.headers.get('Harmonia-Protocol-Major');assert.equal(major,'2');
     return {status: response.status, major, data: await response.json()};
   };
-  const session = async (alias: string, seed = Buffer.alloc(32,88), generation = '1') => {
+  const session = async (alias: string, seed = Buffer.alloc(32,66), generation = '1') => {
     const c = await send('/recovery-challenges','POST',{accountGeneration: '1'},'login'); assert.equal(c.status,200,c.data.error);
     const k = recoveryKeys(seed,account.id,generation), r = await send('/recovery-sessions','POST',{accountGeneration:'1',challengeId:c.data.challengeId,signature:sign(c.data.signingPayload,k.signingSeed)},'login');assert.equal(r.status,200,r.data.error); tokens.set(alias,r.data.token);
     return r.data.token as string;
@@ -88,11 +88,11 @@ export function challengedTarget(target: ResolutionTarget, c: DAGAuthorityChalle
   else {const old = c as DAGRecoveredChallenge;t.originalSessionHash=old.restrictedSessionHash;t.deviceId=old.deviceId;t.deviceSigningPublicKey=old.deviceSigningPublicKey;t.deviceReceivingPublicKey=old.deviceReceivingPublicKey;t.basis.recoveryGeneration=old.recoveryGeneration;t.basis.recoveryHeadHash=old.recoveryTransitionHash;}
   return t;
 }
-export function transitionCommand(h: ClosureHarness, c: DAGAuthorityChallenge, oldSeed = Buffer.alloc(32,88), newSeed = Buffer.alloc(32,71)): RecoveryTransitionCommandV2 {
-  const s = structuredClone(vector.oldRecoveryTransition.submission), t = s.transition, newGeneration = String(BigInt(c.oldRecoveryGeneration)+1n), keys = recoveryKeys(newSeed,h.account.id,newGeneration), old = recoveryKeys(oldSeed,h.account.id,c.oldRecoveryGeneration), root = c.dependencyBundle.initialization.proposal.device;
-  s.environmentManifest=c.environmentManifest;s.authoritySet=c.authoritySet;s.issuerEvidence=c.issuerEvidence;s.legacyState=null;s.envelopes=c.environmentManifest.map(e=>({...e,envelope:b64(Buffer.alloc(80,41))}));
+export function transitionCommand(h: ClosureHarness, c: DAGAuthorityChallenge, oldSeed = Buffer.alloc(32,66), newSeed = Buffer.alloc(32,71)): RecoveryTransitionCommandV2 {
+  const s = structuredClone(vector.proof.records.find((r: any) => r.kind === 'transition-v2').record.submission), t = s.transition, newGeneration = String(BigInt(c.oldRecoveryGeneration)+1n), keys = recoveryKeys(newSeed,h.account.id,newGeneration), old = recoveryKeys(oldSeed,h.account.id,c.oldRecoveryGeneration), root = c.dependencyBundle.initialization.proposal.device;
+  s.environmentManifest=c.environmentManifest;s.authoritySet=c.authoritySet;s.issuerEvidence=c.issuerEvidence;s.envelopes=c.environmentManifest.map(e=>({...e,envelope:b64(Buffer.alloc(80,41))}));
   s.newTrustRoot={rootDeviceId:root.id,rootSigningPublicKey:root.signingPublicKey,rootReceivingPublicKey:root.receivingPublicKey,recoveryGeneration:newGeneration,recoverySigningPublicKey:keys.signingPublicKey,recoveryReceivingPublicKey:keys.receivingPublicKey,signature:''};s.newTrustRoot.signature=sign(trustRootPayload(h.account.id,'1',s.newTrustRoot),keys.signingSeed);
-  Object.assign(t,{accountId:h.account.id,accountGeneration:'1',operationId:c.operationId,challengeId:c.challengeId,nonce:c.nonce,expiresAt:String(c.expiresAt),sessionHash:c.sessionHash,expectedSequence:c.expectedSequence,previousTransitionHash:c.previousTransitionHash,oldRecoveryGeneration:c.oldRecoveryGeneration,oldRecoverySigningPublicKey:c.oldRecoverySigningPublicKey,oldRecoveryReceivingPublicKey:c.oldRecoveryReceivingPublicKey,newRecoveryGeneration:newGeneration,newRecoverySigningPublicKey:keys.signingPublicKey,newRecoveryReceivingPublicKey:keys.receivingPublicKey,authorizationKind:c.authorizationKind,authorizerDeviceId:c.authorizerDeviceId,environmentManifestHash:recoveryManifestHash(s.environmentManifest),authoritySetHash:c.authorizationKind==='old-recovery'?'':recoveryAdminHash(s.authoritySet),issuerEvidenceHash:c.issuerEvidence?sourceHash(c.issuerEvidence):'',envelopesHash:recoveryEnvelopesHash(s.envelopes),newTrustRootHash:recoveryRootHash(h.account.id,'1',s.newTrustRoot),chainMode:'continuous',legacyStateHash:''});
+  Object.assign(t,{accountId:h.account.id,accountGeneration:'1',operationId:c.operationId,challengeId:c.challengeId,nonce:c.nonce,expiresAt:String(c.expiresAt),sessionHash:c.sessionHash,expectedSequence:c.expectedSequence,previousTransitionHash:c.previousTransitionHash,oldRecoveryGeneration:c.oldRecoveryGeneration,oldRecoverySigningPublicKey:c.oldRecoverySigningPublicKey,oldRecoveryReceivingPublicKey:c.oldRecoveryReceivingPublicKey,newRecoveryGeneration:newGeneration,newRecoverySigningPublicKey:keys.signingPublicKey,newRecoveryReceivingPublicKey:keys.receivingPublicKey,authorizationKind:c.authorizationKind,authorizerDeviceId:c.authorizerDeviceId,environmentManifestHash:recoveryManifestHash(s.environmentManifest),authoritySetHash:c.authorizationKind==='old-recovery'?'':recoveryAdminHash(s.authoritySet),issuerEvidenceHash:c.issuerEvidence?sourceHash(c.issuerEvidence):'',envelopesHash:recoveryEnvelopesHash(s.envelopes),newTrustRootHash:recoveryRootHash(h.account.id,'1',s.newTrustRoot)});
   s.authorizationSignature=b64(ed25519.sign(transitionBytesV2(t),c.authorizationKind==='old-recovery'?old.signingSeed:seeds.A!));s.newRecoverySignature=b64(ed25519.sign(transitionBytesV2(t),keys.signingSeed));return {submission:s,dependencyBundle:c.dependencyBundle};
 }
 export function sealedTarget(t: ResolutionTarget, p: RecoveryTransitionCommandV2): ResolutionTarget {return {...t,stage:'sealed',declaredContentHash:transitionHashV2(p.submission)};}

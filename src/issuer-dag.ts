@@ -18,7 +18,7 @@ export function enrollmentV5Fields(certificate: EnrollmentApprovalV5): string[] 
   generation(c.accountGeneration); generation(c.expiresAt); bytes(c.challengeNonce, 32);
   for (const pub of [c.initiatorSigningPublicKey, c.initiatorReceivingPublicKey, c.approverSigningPublicKey, c.approverReceivingPublicKey]) bytes(pub, 32);
   if (c.purpose !== 'enroll-device' || c.initiatorDeviceId === c.approverDeviceId || c.initiatorSigningPublicKey === c.initiatorReceivingPublicKey || c.approverSigningPublicKey === c.approverReceivingPublicKey || BigInt(c.expiresAt) > 253402300799n || certificate.issuerProof.accountId !== c.accountId || certificate.issuerProof.accountGeneration !== c.accountGeneration) fail();
-  const fields = enrollmentFields(certificate); fields[0] = 'harmonia/device-enrollment/v5'; fields.push(dagHash(certificate.issuerProof)); return fields;
+  return ['harmonia/device-enrollment/v5', ...enrollmentFields(certificate), dagHash(certificate.issuerProof)];
 }
 /** 仅验证已确认context和签名的历史来源；新接受仍须同Store当前权限与归档重查。 */
 export function verifyEnrollmentV5(pin: RecoveryDAGPin, certificate: EnrollmentApprovalV5, confirmed: ConfirmedDAGEnrollment, complete = true): ReturnType<typeof verifyIssuerRecoveryDAG> {
@@ -27,8 +27,8 @@ export function verifyEnrollmentV5(pin: RecoveryDAGPin, certificate: EnrollmentA
   verify(c.approverSigningPublicKey, fields, certificate.approverSignature);
   if (complete || certificate.initiatorSignature !== undefined) verify(c.initiatorSigningPublicKey, fields, certificate.initiatorSignature!);
   const verified = verifyIssuerRecoveryDAG(pin, certificate.issuerProof), { dag, graph } = verified, source = certificate.issuerProof.source;
-  const path: DAGArchive[] = source.kind === 'proof3' ? source.view.path : source.proof.path.map(enrollment => ({ kind: 'paired', enrollment }));
-  const targets = source.kind === 'proof3' ? source.view.targets : source.proof.targets, identities = dag.identities, head = dag.head;
+  const path: DAGArchive[] = source.view.path;
+  const targets = source.view.targets, identities = dag.identities, head = dag.head;
   const terminal = path.at(-1);
   let current = graph.identities.get(pin.rootDeviceId)!;
   if (terminal?.kind === 'paired') current = graph.identities.get(terminal.enrollment.approval.context.initiatorDeviceId)!;
@@ -49,4 +49,4 @@ export function verifyEnrollmentV5(pin: RecoveryDAGPin, certificate: EnrollmentA
   }
   return verified;
 }
-function sourceAuthorities(source: IssuerRecoveryDAG['source']): SignedGrant[] { return (source.kind === 'proof2' ? source.proof.authorities : source.view.authorities).map(n => n.grant); }
+function sourceAuthorities(source: IssuerRecoveryDAG['source']): SignedGrant[] { return source.view.authorities.map(n => n.grant); }

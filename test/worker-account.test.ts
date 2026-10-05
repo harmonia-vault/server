@@ -1,3 +1,4 @@
+import { afterEmailCooldown, httpResetProof, verificationCode } from "./email-proof.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -12,25 +13,24 @@ test("actual workerd registration uses D1 routing reservation and one account DO
   try {
     const built = await build({ entryPoints: ["test/worker-harness.ts"], absWorkingDir: process.cwd(), bundle: true, write: false, format: "esm", platform: "browser", target: "es2023", external: ["cloudflare:workers", "node:*"], define: { Buffer: "Buffer" }, banner: { js: 'import { Buffer } from "node:buffer";' } });
     mf = new Miniflare({ modules: true, script: built.outputFiles[0]!.text, compatibilityDate: "2026-07-30", compatibilityFlags: ["nodejs_compat"], bindings: { ALLOW_REGISTRATION: "true", REQUIRE_EMAIL_VERIFICATION: "true", EMAIL_FROM: "noreply@example.invalid" }, durableObjects: { INSTANCES: { className: "InstanceRegistry", useSQLite: true }, ACCOUNTS: { className: "SyntheticVault", useSQLite: true }, FIXTURES: { className: "SyntheticVault", useSQLite: true } }, d1Databases: { DIRECTORY: "directory" }, durableObjectsPersist: join(dir, "objects"), d1Persist: join(dir, "directory") });
-    const post = (path: string, body: unknown) => mf!.dispatchFetch(`https://selfhost.example.invalid${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const post = (path: string, body: unknown) => afterEmailCooldown(() => mf!.dispatchFetch(`https://selfhost.example.invalid${path}`, { method: "POST", headers: {"Harmonia-Protocol-Major":"2", "content-type": "application/json" }, body: JSON.stringify(body) }));
     const email = "worker-account@example.invalid", registered = await post("/v1/register", { email, credential: clientCredential }); assert.equal(registered.status, 200, await registered.clone().text());
     const registration = await registered.json() as { accountId: string; verificationRequired: boolean }; assert.equal(registration.verificationRequired, true);
     const messages = async () => await (await mf!.dispatchFetch(`https://selfhost.example.invalid/test/mail/${registration.accountId}`)).json() as Email[];
-    const proof = (m: Email) => JSON.parse(m.text.split("\n").find(line => line.startsWith("{"))!) as { accountId: string; accountGeneration: string; challengeId: string; token: string };
-    const verification = proof((await messages())[0]!);
+    const verification = verificationCode((await messages())[0]!, registration.accountId);
     assert.equal((await post("/v1/login", { email, credential: clientCredential })).status, 401);
-    const base = `/v1/accounts/${registration.accountId}`, b = { accountGeneration: "1", challengeId: verification.challengeId, token: verification.token };
+    const base = `/v1/accounts/${registration.accountId}`, b = { accountGeneration: "1", code: verification.code };
     const verified = await post(`${base}/email-verification/complete`, b); assert.equal(verified.status, 200, await verified.clone().text());
     assert.equal((await post(`${base}/email-verification/complete`, b)).status, 401);
     const login = await post("/v1/login", { email, credential: clientCredential }); assert.equal(login.status, 200);
     const oldToken = (await login.json() as { token: string }).token;
     assert.equal((await post("/v1/account-reset/request", { email })).status, 200);
-    const reset = proof((await messages())[1]!), request = { accountGeneration: "1", challengeId: reset.challengeId, token: reset.token, newCredential: "cd".repeat(32), confirmation: "DELETE_OLD_VAULT" };
+    const reset = await httpResetProof(post, (await messages())[1]!), request = { accountGeneration: "1", challengeId: reset.challengeId, token: reset.token, newCredential: "cd".repeat(32), confirmation: "DELETE_OLD_VAULT" };
     assert.equal((await post(`${base}/account-reset/complete`, { ...request, confirmation: "NO" })).status, 400);
     const result = await post(`${base}/account-reset/complete`, request); assert.equal(result.status, 200, await result.clone().text()); assert.equal((await result.json() as { accountGeneration: string }).accountGeneration, "2");
     const replay = await post(`${base}/account-reset/complete`, request); assert.equal(replay.status, 200); assert.equal((await replay.json() as { replayed: boolean }).replayed, true);
     const status = await post(`${base}/account-reset/status`, { accountGeneration: "1", challengeId: reset.challengeId, token: reset.token }); assert.equal((await status.json() as { state: string }).state, "complete");
-    const rejected = await mf.dispatchFetch(`https://selfhost.example.invalid${base}/pull?after=0`, { headers: { authorization: `Bearer ${oldToken}`, "x-harmonia-device-id": "old-device", "x-harmonia-account-generation": "1" } }); assert.equal(rejected.status, 401); assert.equal((await rejected.json() as { error: string }).error, "generation_stale");
+    const rejected = await mf.dispatchFetch(`https://selfhost.example.invalid${base}/pull?after=0&capability=issuer-recovery-dag-v1`, { headers: {"Harmonia-Protocol-Major":"2", authorization: `Bearer ${oldToken}`, "x-harmonia-device-id": "old-device", "x-harmonia-account-generation": "1" } }); assert.equal(rejected.status, 401); assert.equal((await rejected.json() as { error: string }).error, "generation_stale");
     assert.equal((await post("/v1/login", { email, credential: clientCredential })).status, 401);
     assert.equal((await post("/v1/login", { email, credential: request.newCredential })).status, 200);
     const directory = await mf.getD1Database("DIRECTORY"), columns = await directory.prepare("PRAGMA table_info(account_directory)").all<{ name: string }>();

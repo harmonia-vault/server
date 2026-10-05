@@ -1,8 +1,5 @@
-import { DAGRequired, buildIssuerRecoveryDAGEvidence, type RecoveryDAGAccount } from "./recovery-dag-account.js";
+import { buildIssuerRecoveryDAGEvidence, type RecoveryDAGAccount } from "./recovery-dag-account.js";
 import type { IssuerRecoveryDAG } from "./recovery-dag-wire.js";
-import { buildIssuerRecoveryEvidence, type IssuerRecoveryProof } from "./issuer-recovery.js";
-import type { RecoveryAuthorityAccount } from "./recovery-authority.js";
-import { buildIssuerEvidence, type IssuerOriginProof } from "./issuer-origin.js";
 import { environmentChangeHash, environmentOriginBytes, environmentOriginHash, environmentRights, rightsFields, type SignedEnvironmentOrigin } from "./environment-origin.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { Fault, grantKey, type Account, type Auth, type SignedGrant, type SignedMutation } from "./model.js";
@@ -134,63 +131,37 @@ export class EnvironmentService {
       return structuredClone({ accountId, accountGeneration: a.generation, sequence: a.sequence, environments });
     });
   }
-  async control(accountId: string, auth: Auth, environmentId: string): Promise<{ sequence: number; grants: SignedGrant[]; issuerEvidence: IssuerOriginProof }> {
-    return this.controlWithProfile(accountId, auth, environmentId, "origin") as Promise<{ sequence: number; grants: SignedGrant[]; issuerEvidence: IssuerOriginProof }>;
-  }
-  async controlRecovery(accountId: string, auth: Auth, environmentId: string): Promise<{ sequence: number; grants: SignedGrant[]; issuerEvidence: IssuerRecoveryProof }> {
-    return this.controlWithProfile(accountId, auth, environmentId, "recovery") as Promise<{ sequence: number; grants: SignedGrant[]; issuerEvidence: IssuerRecoveryProof }>;
-  }
   async controlDAG(accountId: string, auth: Auth, environmentId: string): Promise<{ sequence: number; grants: SignedGrant[]; issuerEvidence: IssuerRecoveryDAG }> {
-    return this.controlWithProfile(accountId, auth, environmentId, "dag") as Promise<{ sequence: number; grants: SignedGrant[]; issuerEvidence: IssuerRecoveryDAG }>;
-  }
-  private async controlWithProfile(accountId: string, auth: Auth, environmentId: string, profile: "origin" | "recovery" | "dag") {
     identifier(environmentId);
     return this.authenticated(accountId, auth, (account, now) => {
       if (permission(account, auth.deviceId, environmentId, now).role !== "admin") throw new Fault(403, "admin_required");
-      if (DAGRequired(account as RecoveryDAGAccount) && profile !== "dag") throw new Fault(426, "protocol_upgrade_required");
-      const grants = Object.values(account.grants).filter(grant => grant.grant.environmentId === environmentId && active(grant, account, now) && (profile !== "dag" || grant.grant.keyVersion === account.environments[environmentId]!.keyVersion));
+      const grants = Object.values(account.grants).filter(grant => grant.grant.environmentId === environmentId && active(grant, account, now) && grant.grant.keyVersion === account.environments[environmentId]!.keyVersion);
       const current = account.grants[grantKey(environmentId, auth.deviceId)]!;
-      const issuerEvidence = profile === "dag"
-        ? buildIssuerRecoveryDAGEvidence(account as RecoveryDAGAccount, auth.deviceId, grants, [current])
-        : profile === "recovery"
-        ? buildIssuerRecoveryEvidence(account as RecoveryAuthorityAccount, auth.deviceId, grants, [current])
-        : buildIssuerEvidence(account, auth.deviceId, grants, [current]);
+      const issuerEvidence = buildIssuerRecoveryDAGEvidence(account as RecoveryDAGAccount, auth.deviceId, grants, [current]);
       if (!issuerEvidence) throw new Fault(403, "issuer_origin_invalid");
       return structuredClone({ sequence: account.sequence, grants, issuerEvidence });
     });
   }
-  async changeStatus(accountId: string, auth: Auth, idempotencyKey: string, version: "1" | "2" = "1"): Promise<{ state: "complete" | "unknown"; sequence?: number; contentHash?: string }> {
+  async changeStatus(accountId: string, auth: Auth, idempotencyKey: string): Promise<{ state: "complete" | "unknown"; sequence?: number; contentHash?: string }> {
     identifier(idempotencyKey);
     return this.authenticated(accountId, auth, a => {
       const found = own(a.idempotency, `environment/${auth.deviceId}/${idempotencyKey}`);
       if (!found) return { state: "unknown" };
-      if (version === "2" && !found.content.startsWith('["harmonia/environment-submission/v2",')) throw new Fault(409, "idempotency_conflict");
-      return { state: "complete", sequence: found.sequence, ...(version === "2" ? { contentHash: Buffer.from(sha256(new TextEncoder().encode(found.content))).toString("hex") } : {}) };
+      return { state: "complete", sequence: found.sequence, contentHash: Buffer.from(sha256(new TextEncoder().encode(found.content))).toString("hex") };
     });
   }
-  async change(accountId: string, auth: Auth, signed: SignedEnvironmentChange): Promise<{ sequence: number; replayed: boolean }> {
+  async changeV4(accountId: string, auth: Auth, signed: SignedEnvironmentChange | SignedEnvironmentChangeV2): Promise<{ sequence: number; replayed: boolean }> {
+    if (signed.change.operation === "create" || signed.change.operation === "rotate") {
+      exact(signed, ["change", "signature", "origin"]);
+      const origin = (signed as SignedEnvironmentChangeV2).origin;
+      exact(origin, ["origin", "signature"]);
+      environmentOriginBytes(origin.origin); bytes(origin.signature, 64);
+      return this.applyChange(accountId, auth, { change: signed.change, signature: signed.signature }, origin);
+    }
     exact(signed, ["change", "signature"]);
     return this.applyChange(accountId, auth, signed);
   }
-  async changeV2(accountId: string, auth: Auth, signed: SignedEnvironmentChangeV2): Promise<{ sequence: number; replayed: boolean }> {
-    exact(signed, ["change", "signature", "origin"]);
-    exact(signed.origin, ["origin", "signature"]);
-    environmentOriginBytes(signed.origin.origin); bytes(signed.origin.signature, 64);
-    return this.applyChange(accountId, auth, { change: signed.change, signature: signed.signature }, signed.origin);
-  }
-  async changeV3(accountId: string, auth: Auth, signed: SignedEnvironmentChangeV2): Promise<{ sequence: number; replayed: boolean }> {
-    exact(signed, ["change", "signature", "origin"]);
-    exact(signed.origin, ["origin", "signature"]);
-    environmentOriginBytes(signed.origin.origin); bytes(signed.origin.signature, 64);
-    return this.applyChange(accountId, auth, { change: signed.change, signature: signed.signature }, signed.origin, "recovery");
-  }
-  async changeV4(accountId: string, auth: Auth, signed: SignedEnvironmentChangeV2): Promise<{ sequence: number; replayed: boolean }> {
-    exact(signed, ["change", "signature", "origin"]);
-    exact(signed.origin, ["origin", "signature"]);
-    environmentOriginBytes(signed.origin.origin); bytes(signed.origin.signature, 64);
-    return this.applyChange(accountId, auth, { change: signed.change, signature: signed.signature }, signed.origin, "dag");
-  }
-  private async applyChange(accountId: string, auth: Auth, signed: SignedEnvironmentChange, origin?: SignedEnvironmentOrigin, profile: "origin" | "recovery" | "dag" = "origin"): Promise<{ sequence: number; replayed: boolean }> {
+  private async applyChange(accountId: string, auth: Auth, signed: SignedEnvironmentChange, origin?: SignedEnvironmentOrigin): Promise<{ sequence: number; replayed: boolean }> {
     const encoded = environmentChangeBytes(signed.change); bytes(signed.signature, 64);
     return this.authenticated(accountId, auth, (a, now) => {
       const c = signed.change;
@@ -199,18 +170,9 @@ export class EnvironmentService {
       const key = `environment/${auth.deviceId}/${c.idempotencyKey}`, wire = origin ? environmentSubmissionContent(encoded, signed.signature, origin) : content(encoded, signed.signature), old = own(a.idempotency, key);
       const authority = permission(a, auth.deviceId, c.authorityEnvironmentId, now);
       if (authority.role !== "admin") throw new Fault(403, "admin_required");
-      // 旧接受包沿唯一幂等库返回原序号；不会因路由/profile改变成为新写。
-      // 当前账号/会话/设备/Admin检查始终先于重提交；失权设备只可查原收据。
+      const source = a.grants[grantKey(c.authorityEnvironmentId, auth.deviceId)]!;
+      buildIssuerRecoveryDAGEvidence(a as RecoveryDAGAccount, auth.deviceId, [source]);
       if (old) { if (old.content !== wire) throw new Fault(409, "idempotency_conflict"); return { sequence: old.sequence, replayed: true }; }
-      const dagRequired = DAGRequired(a as RecoveryDAGAccount);
-      if (dagRequired && (c.operation === "create" || c.operation === "rotate") && profile !== "dag") throw new Fault(426, "protocol_upgrade_required");
-      // 新P4生命周期逐次核完整已接受DAG来源，rename/delete仍用原签名域。
-      if (profile === "dag" || dagRequired || origin) {
-        const source = a.grants[grantKey(c.authorityEnvironmentId, auth.deviceId)]!;
-        if (profile === "dag" || dagRequired) buildIssuerRecoveryDAGEvidence(a as RecoveryDAGAccount, auth.deviceId, [source]);
-        else if (profile === "recovery") buildIssuerRecoveryEvidence(a as RecoveryAuthorityAccount, auth.deviceId, [source]);
-        else buildIssuerEvidence(a, auth.deviceId, [source]);
-      }
       if (authority.keyVersion !== c.authorityKeyVersion || authority.grantGeneration !== c.authorityGrantGeneration) throw new Fault(403, "grant_stale");
       if (c.expectedSequence !== String(a.sequence)) throw new Fault(409, "environment_snapshot_stale");
       if (a.recoveryGeneration !== c.recoveryGeneration || !a.recoverySigningPublicKey || !a.recoveryReceivingPublicKey) throw new Fault(409, "recovery_generation_stale");

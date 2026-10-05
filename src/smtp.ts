@@ -15,5 +15,5 @@ export function smtpTransport(config: SmtpConfig): ReturnType<typeof nodemailer.
 
 export function smtpEmail(config: SmtpConfig, from: string): EmailTransport {
   const transport = smtpTransport(config), address = sender(from);
-  return { async send(message) { await transport.sendMail({ from: address, to: message.to, subject: message.subject, text: message.text }); } };
+  return { async send(message) { await transport.sendMail({ from: address, to: message.to, subject: message.subject, text: message.text, ...(message.html ? { html: message.html } : {}) }); } };
 }

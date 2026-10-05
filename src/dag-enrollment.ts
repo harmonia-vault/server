@@ -33,10 +33,10 @@ function manager(a:RecoveryDAGAccount,auth:Auth,hash:string,now:number):void {
   if(s.deviceId!==auth.deviceId)throw new Fault(403,'device_proof_required');
   if(!Object.keys(a.environments).some(id=>{try{return permission(a,auth.deviceId,id,now).role==='admin';}catch{return false;}}))throw new Fault(403,'admin_required');
 }
-function stillCurrent(a:RecoveryDAGAccount,r:DAGPairingRecord,c:EnrollmentApprovalV5,now:number):void {
+export function stillCurrent(a:RecoveryDAGAccount,r:DAGPairingRecord,c:EnrollmentApprovalV5,now:number):void {
   approvalStillValid(a,r,c.grants,now);
   const proof=verifyAcceptedDAGEvidence(a,c.issuerProof),source=c.issuerProof.source;
-  const targets=source.kind==='proof2'?source.proof.targets:source.view.targets;
+  const targets=source.view.targets;
   if(targets.length!==c.grants.length)throw new Fault(403,'issuer_authority_changed');
   for(const g of c.grants){
     const target=targets.find(t=>t.environmentId===g.grant.environmentId);
@@ -63,13 +63,12 @@ export class DAGEnrollmentService {
       const approver=own(a.devices,p.approverDeviceId)!;
       const prior=own(a.dagPairingSessions,p.idempotencyKey);
       if(prior){const c=prior.context;if(prior.initiatorSessionHash!==hash||c.initiatorDeviceId!==p.deviceId||c.initiatorSigningPublicKey!==p.signingPublicKey||c.initiatorReceivingPublicKey!==p.receivingPublicKey||c.approverDeviceId!==p.approverDeviceId)throw new Fault(409,'idempotency_conflict');return view(prior);}
-      if(own(a.pairingSessions,p.idempotencyKey))throw new Fault(409,'idempotency_conflict');
       if(own(a.devices,p.deviceId))throw new Fault(409,'device_id_exists');
       const keys=Object.values(a.devices).flatMap(d=>[d.signingPublicKey,d.receivingPublicKey]);
       if([p.signingPublicKey,p.receivingPublicKey].some(k=>keys.includes(k)||verifiedAccountDAG(a).head.seenKeys.has(k)))throw new Fault(400,'pairing_identity_invalid');
       a.dagPairingSessions??={};
       // 已用原ID不会因短挑战到期重新生成nonce；容量有界并明确拒绝。
-      if(Object.keys(a.devices).length>=64||Object.keys(a.dagPairingSessions).length+Object.keys(a.pairingSessions??{}).length>=64)throw new Fault(429,'pairing_capacity_reached');
+      if(Object.keys(a.devices).length>=64||Object.keys(a.dagPairingSessions).length>=64)throw new Fault(429,'pairing_capacity_reached');
       const r:DAGPairingRecord={idempotencyKey:p.idempotencyKey,initiatorSessionHash:hash,certificateVersion:'5',context:{accountId:id,accountGeneration:a.generation,purpose:'enroll-device',sessionId:crypto.randomUUID(),challengeNonce:randomToken(),expiresAt:String(now+120),initiatorDeviceId:p.deviceId,initiatorSigningPublicKey:p.signingPublicKey,initiatorReceivingPublicKey:p.receivingPublicKey,approverDeviceId:p.approverDeviceId,approverSigningPublicKey:approver.signingPublicKey,approverReceivingPublicKey:approver.receivingPublicKey},messages:{},confirmations:{}};
       a.dagPairingSessions[p.idempotencyKey]=r;return view(r);
     });

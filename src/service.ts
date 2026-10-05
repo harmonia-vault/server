@@ -1,9 +1,5 @@
-import { DAGRequired, buildIssuerRecoveryDAGEvidence, type RecoveryDAGAccount } from './recovery-dag-account.js';
+import { buildIssuerRecoveryDAGEvidence, type RecoveryDAGAccount } from './recovery-dag-account.js';
 import { recoveryDAGCapability } from './recovery-dag-wire.js';
-import { recoveryAuthorityCapability } from "./recovery-authority-wire.js";
-import { buildIssuerRecoveryEvidence } from "./issuer-recovery.js";
-import type { RecoveryAuthorityAccount } from "./recovery-authority.js";
-import { buildIssuerEvidence, issuerOriginCapability } from "./issuer-origin.js";
 import { assertRegistration, registrationComplete, registrationVerificationRequired } from "./registration.js";
 import { AccountLifecycle } from "./account-lifecycle.js";
 import { issuerAuthorityHash } from "./issuer-proof.js";
@@ -61,8 +57,8 @@ function idempotent(account: Account, key: string, content: string): { sequence:
 export class VaultService {
   constructor(readonly store: Store, readonly policy: Policy, private readonly clock: () => number = unix, private readonly passwords: PasswordHasher = wasmPassword, readonly mail?: EmailTransport) {}
   accountLifecycle(): AccountLifecycle { return new AccountLifecycle(this.store, this.passwords, this.clock, this.mail); }
-  async register(email: string, clientCredential: string, reservedAccountId?: string): Promise<{ accountId: string; accountGeneration: string; verificationRequired: boolean }> {
-    return this.accountLifecycle().register(email, clientCredential, this.policy, reservedAccountId);
+  async register(email: string, clientCredential: string, reservedAccountId?: string, clientIP?: string): Promise<{ accountId: string; accountGeneration: string; verificationRequired: boolean }> {
+    return this.accountLifecycle().register(email, clientCredential, this.policy, reservedAccountId, clientIP);
   }
   async login(email: string, clientCredential: string): Promise<{ accountId: string; accountGeneration: string; token: string; expiresAt: number }> {
     const accountId = this.store.byEmail(normalizeEmail(email));
@@ -160,7 +156,7 @@ export class VaultService {
       if (authority.expiresAt !== "0" && (g.expiresAt === "0" || BigInt(g.expiresAt) > BigInt(authority.expiresAt))) throw new Fault(403, "expiry_escalation");
       verify(account.devices[auth.deviceId]!.signingPublicKey, encoded, signed.signature);
       // 原签域的DAG账号写授权也逐次核已接受来源与目标历史身份；不从目录TOFU。
-      if (DAGRequired(account as RecoveryDAGAccount)) {
+      {
         const source=account.grants[grantKey(g.environmentId,auth.deviceId)]!;
         buildIssuerRecoveryDAGEvidence(account as RecoveryDAGAccount,auth.deviceId,[source],[source],[g.subjectDeviceId]);
       }
@@ -183,12 +179,10 @@ export class VaultService {
     if (!receipt) return { idempotencyKey, accepted: false };
     return { idempotencyKey, accepted: true, sequence: receipt.sequence, contentHash: await tokenHash(receipt.content) };
   }
-  async pull(accountId: string, auth: Auth, after: number, scope?: "authorizations", capability?: string): Promise<Pull> {
-    if (capability !== undefined && capability !== issuerOriginCapability && capability !== recoveryAuthorityCapability && capability !== recoveryDAGCapability) throw new Fault(400, "issuer_origin_capability_required");
+  async pull(accountId: string, auth: Auth, after: number, scope?: "authorizations"): Promise<Pull> {
     if (scope !== undefined && scope !== "authorizations") throw new Fault(400, "scope_invalid");
     if (!Number.isSafeInteger(after) || after < 0) throw new Fault(400, "checkpoint_invalid");
     return this.authenticated(accountId, auth, (account, now) => {
-      if(DAGRequired(account as RecoveryDAGAccount) && capability!==recoveryDAGCapability)throw new Fault(426,'protocol_upgrade_required');
       if (after > account.sequence) throw new Fault(409, "checkpoint_ahead");
       const grants: SignedGrant[] = [];
       const readable = new Set<string>();
@@ -201,16 +195,12 @@ export class VaultService {
       }
       const readableGrants = grants.filter(signed => readable.has(signed.grant.environmentId));
       const events = scope === "authorizations" ? [] : account.events.filter(e => e.sequence > after && readable.has(e.mutation.mutation.environmentId) && e.mutation.mutation.keyVersion === account.environments[e.mutation.mutation.environmentId]?.keyVersion);
-      const environmentEvents = (account.environmentHistory ?? []).filter(e => e.sequence > after && e.subjects.includes(auth.deviceId) && (e.change.change.operation === "delete" || readable.has(e.change.change.environmentId))).map(event => {
-        if (capability || !event.origin) return event;
-        const { origin: _origin, ...legacyEvent } = event;
-        return legacyEvent;
-      });
+      const environmentEvents = (account.environmentHistory ?? []).filter(e => e.sequence > after && e.subjects.includes(auth.deviceId) && (e.change.change.operation === "delete" || readable.has(e.change.change.environmentId)));
       // 返回数据的历史写入者可能不在本设备当前授权路径中；候选闭包还须包含
       // 这些精确冻结的签名授权及双签身份。暂停流没有普通数据事件。
       const sources = [...readableGrants, ...events.map(event => event.authorization), ...environmentEvents.map(event => event.authorization)];
       const targets = new Map(readableGrants.map(grant => [grant.grant.environmentId, grant]));
-      if (capability) for (const signed of grants) {
+      for (const signed of grants) {
         let source = signed;
         if (signed.grant.role === "none") {
           const accepted = account.grantHistory?.find(event => issuerAuthorityHash(event.grant) === issuerAuthorityHash(signed));
@@ -226,7 +216,7 @@ export class VaultService {
       }
       return structuredClone({ accountId, accountGeneration: account.generation, sequence: account.sequence, grants,
         ...(scope ? { scope } : {}),
-        ...(capability ? { issuerEvidence: targets.size ? capability===recoveryDAGCapability ? buildIssuerRecoveryDAGEvidence(account as RecoveryDAGAccount,auth.deviceId,sources,[...targets.values()]) : capability===recoveryAuthorityCapability ? buildIssuerRecoveryEvidence(account as RecoveryAuthorityAccount, auth.deviceId, sources, [...targets.values()]) : buildIssuerEvidence(account, auth.deviceId, sources, [...targets.values()]) : null } : {}),
+        issuerEvidence: targets.size ? buildIssuerRecoveryDAGEvidence(account as RecoveryDAGAccount, auth.deviceId, sources, [...targets.values()]) : null,
         environmentEvents, events });
     });
   }

@@ -55,7 +55,7 @@ export class RecoveryOperationResolutionService {
       if (t.accountId !== accountId || t.accountGeneration !== a.generation || t.originalSessionHash === h) return conflict();
       const d = recoveryOperationDirectory(a, t.operationId);
       const common = {version: 1, profile: resolutionProfile, accountId, accountGeneration: a.generation, kind: t.kind, operationId: t.operationId, targetHash} as const;
-      // 持久closed已由统一Store验证。当前授权仍先验，但后续合法legacy轮换
+      // 持久closed已由统一Store验证。当前授权仍先验，但后续合法 DAG 换代
       // 造成的DAG gap不能改变此原终态；这里只读精确同target的固定收据。
       if (d.closure) {
         if (d.closure.targetHash !== targetHash || JSON.stringify(resolutionTargetFields(d.closure.target)) !== JSON.stringify(resolutionTargetFields(t))) return conflict();

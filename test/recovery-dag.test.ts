@@ -8,7 +8,6 @@ import { recoveredGrantsHash } from '../src/recovered-device-wire.js';
 import { mutationBytes, grantBytes, verify } from '../src/protocol.js';
 import { issuerAuthorityHash } from '../src/issuer-proof.js';
 import { environmentOriginHash } from '../src/environment-origin.js';
-import { issuerRecoveryCanonical, enrollmentV4Fields } from '../src/issuer-recovery.js';
 import { dagCanonical, dagHash, snapshotDAGValue, dagArchiveFields, sourceCanonical, sourceViewCanonical, transitionBytesV2, recoveredEnrollmentBytesV2, recordRow, decodeIssuerRecoveryDAG, decodeRecoveryDependencyBundle, decodeRecoveryTransitionCommandV2, decodeRecoveredDeviceCommandV2, type IssuerRecoveryDAG, type RecoveryDAGRecord, type DAGPairedEnrollment } from '../src/recovery-dag-wire.js';
 import { verifyIssuerRecoveryDAG, verifyRecoveryDependencyBundle, type RecoveryDAGPin } from '../src/recovery-dag.js';
 import { enrollmentV5Fields, verifyEnrollmentV5 } from '../src/issuer-dag.js';
@@ -38,7 +37,7 @@ test('Go/Node黄金向量：平坦五节点两次恢复与G全环境Admin复轮�
   assert.equal(v.graph.origins.has(environmentOriginHash(vector.creation.origin)), true);
   const third = decoded.records.at(-1)! as Extract<RecoveryDAGRecord, { kind: 'transition-v2' }>;
   assert.equal(hex(transitionBytesV2(third.record.submission.transition)), vector.transitionSigningHex);
-  const g = family(decoded, 'recovered-v2');
+  const g: any = decoded.records.find(r => r.kind === 'recovered-v2' && r.record.sequence === 41)!.record;
   assert.equal(hex(recoveredEnrollmentBytesV2(g.submission.enrollment)), vector.recoveredSigningHex);
   assert.equal(hex(new TextEncoder().encode(JSON.stringify(enrollmentV5Fields(vector.approval)))), vector.certificateSigningHex);
   assert.equal(JSON.parse(new TextDecoder().decode(dagCanonical(decoded))).length, 6);
@@ -53,7 +52,7 @@ test('DAG依赖不能缺失、越过接受时间、替换种类/根/原初始化
     const p: any = clone(), q = { ...pin };
     switch (name) {
       case 'missing-record': p.records.splice(0, 1); break;
-      case 'wrong-kind': p.source.view.dependencies[0].kind = 'recovered-v2'; break;
+      case 'wrong-kind': p.source.view.dependencies[0].kind = p.source.view.dependencies[0].kind === 'recovered-v2' ? 'transition-v2' : 'recovered-v2'; break;
       case 'forward-head': family(p, 'recovered-v2').submission.issuerEvidence.view.recoveryHeadHash = p.source.view.recoveryHeadHash; break;
       case 'wrong-init': p.source.view.initializationHash = 'f'.repeat(64); break;
       case 'wrong-pin': q.rootDeviceId = 'server-root'; break;
@@ -67,7 +66,7 @@ test('DAG依赖不能缺失、越过接受时间、替换种类/根/原初始化
       case 'source-identity-new-pub': {
         p.records = p.records.slice(0, 4);
         const s = family(p, 'recovered-v2').submission;
-        const archived = s.issuerEvidence.view.identityPaths.flat().find((n: any) => n.kind === 'paired' && n.enrollment.certificateVersion === '4');
+        const archived = s.issuerEvidence.view.identityPaths.flat().find((n: any) => n.kind === 'paired' && n.enrollment.certificateVersion === '5');
         const id = archived.enrollment.approval.context.initiatorDeviceId;
         const deviceSeed = Buffer.from(vector.syntheticSeedsHex.GEd, 'hex');
         s.enrollment.deviceId = id;
@@ -106,11 +105,8 @@ test('全环境Admin不能用部分清单、根身份、旧版本/代际或缺�
   assert.throws(() => verifyIssuerRecoveryDAG(pin, p, point));
 });
 
-test('外proof2显式保留最新head全闭包；旧TrustRoot不匹配当前恢复代际必须拒绝', () => {
-  const p: any = clone(); p.source = { kind: 'proof2', proof: structuredClone(family(p, 'recovered-v1').submission.issuerEvidence) };
-  p.source.proof.trustRoot = structuredClone(p.records.at(-1).record.submission.newTrustRoot);
-  const v = accepted(p); assert.equal(v.dag.recordChecks, 5); assert.equal(v.dag.head.generation, '4');
-  p.source.proof.trustRoot = structuredClone(proof.initialization.proposal);
+test('拒绝旧来源格式，不从旧证据推导原始初始化', () => {
+  const p: any = clone(); p.source = {kind: 'proof2', proof: structuredClone(p.source.view)};
   assert.throws(() => accepted(p));
 });
 
@@ -129,7 +125,6 @@ test('新DAG独立JSON schema拒绝重复/未知/null/深层/过量材料，旧P
   const o: any = clone(); delete o.records; cases['omitted-array'] = Buffer.from(JSON.stringify(o));
   const u: any = clone(); u.records[0].record.submission.unexpected = true; cases['unknown-submission'] = Buffer.from(JSON.stringify(u));
   for (const [name, bytes] of Object.entries(cases)) await t.test(name, () => assert.throws(() => decodeIssuerRecoveryDAG(bytes)));
-  assert.throws(() => issuerRecoveryCanonical(proof as any));
   const b = { initialization: proof.initialization, records: proof.records.slice(0, 2) };
   assert.equal(decodeRecoveryDependencyBundle(Buffer.from(JSON.stringify(b))).records.length, 2);
   const transition = { submission: family(proof, 'transition-v2').submission, dependencyBundle: b };
@@ -137,7 +132,7 @@ test('新DAG独立JSON schema拒绝重复/未知/null/深层/过量材料，旧P
   assert.doesNotThrow(() => decodeRecoveryTransitionCommandV2(Buffer.from(JSON.stringify(transition))));
   assert.doesNotThrow(() => decodeRecoveredDeviceCommandV2(Buffer.from(JSON.stringify(device))));
   assert.throws(() => decodeRecoveryTransitionCommandV2(Buffer.from(JSON.stringify({ ...transition, proof }))));
-  assert.throws(() => decodeRecoveredDeviceCommandV2(Buffer.from(JSON.stringify({ ...device, submission: family(proof, 'recovered-v1').submission }))));
+  assert.throws(() => decodeRecoveredDeviceCommandV2(Buffer.from(JSON.stringify({ ...device, submission: {...family(proof, 'recovered-v2').submission, certificateVersion: '4'} }))));
 });
 
 test('平坦记录按接受序号单次核验，输入顺序不替换签名哈希；重复节点/操作及未使用分支拒绝', () => {
@@ -145,7 +140,7 @@ test('平坦记录按接受序号单次核验，输入顺序不替换签名哈�
   assert.equal(dagHash(p), vector.hash); assert.equal(accepted(p).dag.recordChecks, 5);
   const duplicate = clone(); duplicate.records.push(structuredClone(duplicate.records[0]!));
   assert.throws(() => accepted(duplicate));
-  const bad: any = clone(); family(bad, 'recovered-v2').submission.enrollment.operationId = family(bad, 'recovered-v1').submission.enrollment.operationId;
+  const bad: any = clone(); bad.records.find((r: any) => r.kind === 'recovered-v2' && r.record.sequence === 41).record.submission.enrollment.operationId = family(bad, 'recovered-v2').submission.enrollment.operationId;
   assert.throws(() => accepted(bad));
   const unused: any = clone(); unused.records = unused.records.slice(0, 4); unused.source = structuredClone(family(unused, 'recovered-v2').submission.issuerEvidence);
   assert.throws(() => accepted(unused));
@@ -181,7 +176,6 @@ test('Go实际G→H cert5双签明确批准三环境RO，归档不嵌完整P4且
     }
     assert.throws(() => verifyEnrollmentV5(q, a, c));
   });
-  assert.throws(() => enrollmentV4Fields(approval));
 });
 
 test('新DAG构造持有受限独立pin/bundle；caller返后改原初始化/记录不能改变受信链', () => {

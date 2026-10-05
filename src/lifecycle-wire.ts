@@ -5,14 +5,8 @@ export { trustRootPayload, trustRootHash, validateTrustRoot, type TrustRoot } fr
 import { bytes, generation, identifier } from "./protocol.js";
 export interface RecoveryAuth { token: string; accountGeneration: string; deviceId?: string }
 export interface Envelope { environmentId: string; keyVersion: string; envelope: string }
-export interface RotationProposal { idempotencyKey: string; newRecoveryGeneration: string; newRecoverySigningPublicKey: string; newRecoveryReceivingPublicKey: string; envelopes: Envelope[]; newTrustRoot?: TrustRoot }
 export interface BootChallenge { id: string; deviceId: string; generation: string; signingPublicKey: string; receivingPublicKey: string; nonce: string; expiresAt: number }
 export interface RecoveryChallenge { id: string; generation: string; recoveryGeneration: string; signingPublicKey: string; nonce: string; expiresAt: number }
-export interface RotationRecord {
-  state: "pending" | "complete"; id: string; generation: string; recoveryGeneration: string;
-  sessionHash: string; deviceId: string | null; nonce: string; expiresAt: number;
-  proposal: RotationProposal; envelopesHash: string; signature?: string; sequence?: number; trustRootHash?: string;
-}
 export function canonical(fields: string[]): Uint8Array { return new TextEncoder().encode(JSON.stringify(fields)); }
 export function envelopeHash(envelopes: Envelope[]): string {
   if (!Array.isArray(envelopes) || envelopes.length > 256) throw new Fault(400, "envelopes_invalid");
@@ -49,24 +43,4 @@ export function bootPayload(accountId: string, c: BootChallenge): string[] {
 }
 export function recoveryPayload(accountId: string, c: RecoveryChallenge): string[] {
   return ["harmonia/recovery-proof/v1", accountId, c.generation, c.recoveryGeneration, c.id, c.nonce, String(c.expiresAt)];
-}
-export function rotationPayload(accountId: string, r: RotationRecord): string[] {
-  const p = r.proposal;
-  const fields = ["harmonia/recovery-rotation/v1", accountId, r.generation, r.sessionHash, r.recoveryGeneration, r.id, r.nonce, String(r.expiresAt), p.newRecoveryGeneration, p.newRecoverySigningPublicKey, p.newRecoveryReceivingPublicKey, r.envelopesHash];
-  if (r.trustRootHash) fields.push(r.trustRootHash);
-  return fields;
-}
-
-export function rotationTrustHash(account: Account, proposal: RotationProposal): string | undefined {
-  if (!account.trustRoot) {
-    if (proposal.newTrustRoot) throw new Fault(409, "trust_root_uninitialized");
-    // Legacy internal fixtures only. Public initialization always establishes a signed trust root.
-    return undefined;
-  }
-  const prior = account.trustRoot, root = proposal.newTrustRoot;
-  if (!root) throw new Fault(400, "trust_root_required");
-  const hash = trustRootHash(account.id, account.generation, root);
-  if (root.rootDeviceId !== prior.rootDeviceId || root.rootSigningPublicKey !== prior.rootSigningPublicKey || root.rootReceivingPublicKey !== prior.rootReceivingPublicKey) throw new Fault(403, "trust_root_substitution");
-  if (root.recoveryGeneration !== proposal.newRecoveryGeneration || root.recoverySigningPublicKey !== proposal.newRecoverySigningPublicKey || root.recoveryReceivingPublicKey !== proposal.newRecoveryReceivingPublicKey) throw new Fault(409, "trust_root_recovery_binding_invalid");
-  return hash;
 }

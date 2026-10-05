@@ -18,11 +18,11 @@ async function withStore(run: (context: ReturnType<typeof nodeStore>, service: V
 }
 function denies(code: string): (e: unknown) => boolean { return e => e instanceof Fault && e.code === code; }
 test("accepted writes are ordered, identical retry keeps sequence and pull catches up", async () => withStore(async (_, service) => {
-  assert.deepEqual(await service.mutate("synthetic-account", auth(), mutation()), { sequence: 1, replayed: false });
-  assert.deepEqual(await service.mutate("synthetic-account", auth(), mutation()), { sequence: 1, replayed: true });
-  assert.equal((await service.mutate("synthetic-account", auth(), mutation("writer", { idempotencyKey: "write-2" }))).sequence, 2);
-  const pull = await service.pull("synthetic-account", auth("reader"), 1);
-  assert.equal(pull.sequence, 2); assert.deepEqual(pull.events.map(e => e.sequence), [2]);
+  assert.deepEqual(await service.mutate("synthetic-account", auth(), mutation()), { sequence: 4, replayed: false });
+  assert.deepEqual(await service.mutate("synthetic-account", auth(), mutation()), { sequence: 4, replayed: true });
+  assert.equal((await service.mutate("synthetic-account", auth(), mutation("writer", { idempotencyKey: "write-2" }))).sequence, 5);
+  const pull = await service.pull("synthetic-account", auth("reader"), 4);
+  assert.equal(pull.sequence, 5); assert.deepEqual(pull.events.map(e => e.sequence), [5]);
 }));
 test("same id with changed signed content is rejected", async () => withStore(async (_, service) => {
   await service.mutate("synthetic-account", auth(), mutation());
@@ -38,7 +38,7 @@ test("RO, ungranted, wrong device and tampered signatures cannot write", async (
 test("signed downgrade and revocation take effect before retry; revoked pull returns no ciphertext", async () => withStore(async (_, service) => {
   await service.mutate("synthetic-account", auth(), mutation());
   const downgrade = signGrant(grant("writer", { grantGeneration: "2", role: "ro", idempotencyKey: "downgrade" }));
-  assert.equal((await service.changeGrant("synthetic-account", auth("admin"), downgrade)).sequence, 2);
+  assert.equal((await service.changeGrant("synthetic-account", auth("admin"), downgrade)).sequence, 5);
   await assert.rejects(service.mutate("synthetic-account", auth(), mutation()), denies("write_forbidden"));
   assert.equal((await service.changeGrant("synthetic-account", auth("admin"), downgrade)).replayed, true);
   const revoke = signGrant(grant("writer", { grantGeneration: "3", role: "none", envelope: "", idempotencyKey: "revoke" }));
@@ -47,9 +47,10 @@ test("signed downgrade and revocation take effect before retry; revoked pull ret
   assert.equal(pull.grants[0]?.grant.role, "none"); assert.equal(pull.events.length, 0);
 }));
 test("expired grants deny reads and writes at exact boundary", async () => withStore(async ({ store }, service) => {
-  store.transaction("synthetic-account", a => { a.grants[grantKey("dev", "writer")] = signGrant(grant("writer", { expiresAt: String(now) })); });
-  await assert.rejects(service.mutate("synthetic-account", auth(), mutation()), denies("environment_forbidden"));
-  assert.equal((await service.pull("synthetic-account", auth(), 0)).events.length, 0);
+  await service.changeGrant("synthetic-account",auth("admin"),signGrant(grant("writer",{grantGeneration:"2",idempotencyKey:"expire-writer",expiresAt:String(now+1)})));
+  const expired = new VaultService(store,service.policy,()=>now+1);
+  await assert.rejects(expired.mutate("synthetic-account", auth(), mutation()), denies("environment_forbidden"));
+  assert.equal((await expired.pull("synthetic-account", auth(), 0)).events.length, 0);
 }));
 test("non-admin grants, key substitution, stale generations and grant replay fail", async () => withStore(async (_, service) => {
   const g = signGrant(grant("reader", { grantGeneration: "2", role: "rw", idempotencyKey: "promote" }));
@@ -61,7 +62,7 @@ test("non-admin grants, key substitution, stale generations and grant replay fai
 test("account isolation and generation invalidation are checked against current persisted state", async () => withStore(async ({ store }, service) => {
   store.create(await fixtureAccount("other-account", "other@example.invalid"));
   await assert.rejects(service.mutate("other-account", auth(), mutation()), denies("binding_invalid"));
-  store.transaction("synthetic-account", a => { a.generation = "2"; a.sessions = []; a.devices = {}; a.grants = {}; a.events = []; a.idempotency = {}; });
+  store.transaction("synthetic-account", a => { a.generation = "2"; delete a.trustRoot; a.sessions = []; a.devices = {}; a.grants = {}; a.events = []; a.idempotency = {}; });
   await assert.rejects(service.pull("synthetic-account", auth(), 0), denies("generation_stale"));
   await assert.rejects(service.mutate("synthetic-account", auth(), mutation()), denies("generation_stale"));
 }));
@@ -70,12 +71,12 @@ test("SQLite reopen preserves accepted event, authorization, token and idempoten
   const restarted = nodeStore(path);
   try { const next = new VaultService(restarted.store, service.policy, () => now);
     assert.equal((await next.pull("synthetic-account", auth(), 0)).events.length, 1);
-    assert.deepEqual(await next.mutate("synthetic-account", auth(), mutation()), { sequence: 1, replayed: true });
+    assert.deepEqual(await next.mutate("synthetic-account", auth(), mutation()), { sequence: 4, replayed: true });
   } finally { restarted.sql.close(); }
 }));
 test("transaction rollback does not consume sequence", async () => withStore(async ({ store }, service) => {
   assert.throws(() => store.transaction("synthetic-account", a => { a.sequence = 100; throw new Error("synthetic rollback"); }));
-  assert.equal((await service.mutate("synthetic-account", auth(), mutation())).sequence, 1);
+  assert.equal((await service.mutate("synthetic-account", auth(), mutation())).sequence, 4);
 }));
 test("password-equivalent SHA256 is randomly salted Argon2id at 64 MiB / 3 passes; login does not establish device trust", async () => withStore(async (_, service) => {
   const h1 = await hashCredential(clientCredential); const h2 = await hashCredential(clientCredential);
@@ -92,11 +93,11 @@ test("registration switches are independent; verification and pairing remain fai
   await assert.rejects(service.pull(account.accountId, { deviceId: "admin", token: login.token, accountGeneration: "1" }, 0), denies("device_untrusted"));
 }));
 test("HTTP rejects remote plain HTTP, malformed body, and enrollment/reset bypass routes", async () => withStore(async (_, service) => {
-  const request = (path: string, data: unknown) => new Request(`https://selfhost.example.invalid${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(data) });
+  const request = (path: string, data: unknown) => new Request(`https://selfhost.example.invalid${path}`, { method: "POST", headers: {"Harmonia-Protocol-Major":"2", "content-type": "application/json" }, body: JSON.stringify(data) });
   assert.equal((await route(new Request("http://remote.example.invalid/health"), service)).status, 400);
   for (const path of ["/v1/bootstrap", "/v1/reset", "/v1/pairing"]) assert.equal((await route(request(path, {}), service)).status, 404);
   assert.equal((await route(request("/v1/login", { email }), service)).status, 400);
-  assert.equal((await route(new Request("https://selfhost.example.invalid/v1/accounts/synthetic-account/pull?after=0", { headers: { authorization: `Bearer ${tokenFor("reader")}`, "x-harmonia-device-id": "reader", "x-harmonia-account-generation": "1" } }), service)).status, 200);
+  assert.equal((await route(new Request("https://selfhost.example.invalid/v1/accounts/synthetic-account/pull?after=0&capability=issuer-recovery-dag-v1", { headers: {"Harmonia-Protocol-Major":"2", authorization: `Bearer ${tokenFor("reader")}`, "x-harmonia-device-id": "reader", "x-harmonia-account-generation": "1" } }), service)).status, 200);
 }));
 test("SMTP permits only authenticated TLS modes and disables secret debug output", () => {
   for (const port of [465, 587] as const) {

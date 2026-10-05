@@ -8,7 +8,7 @@ import { recoveryOperationClosureCapability, maxResolutionBytes, type Resolution
 export async function recoveryOperationResolutionRoute(request: Request, store: Store): Promise<{handled: boolean; result?: unknown}> {
   const u = new URL(request.url), m = u.pathname.match(/^\/v1\/accounts\/([A-Za-z0-9._:-]+)\/recovery-operation-resolutions-v1$/);
   if (!m) return {handled: false};
-  requestProtocolMajor(request, true);
+  requestProtocolMajor(request);
   if (request.method !== 'POST') throw new Fault(405, 'method_not_allowed');
   if (u.searchParams.get('capability') !== recoveryOperationClosureCapability || [...u.searchParams.keys()].join('|') !== 'capability' || u.searchParams.getAll('capability').length !== 1) throw new Fault(400, 'recovery_capability_required');
   const token = request.headers.get('authorization')?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1], accountGeneration = request.headers.get('x-harmonia-account-generation');

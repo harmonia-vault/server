@@ -2,11 +2,10 @@ import { canonical, exact, hash, enrollmentFields, pairingProfile } from './enro
 import { Fault } from './model.js';
 import { bytes, generation, grantBytes, identifier } from './protocol.js';
 import { environmentOriginBytes, environmentOriginHash, type SignedEnvironmentOrigin } from './environment-origin.js';
-import { issuerOriginCanonical, type IssuerOriginProof } from './issuer-origin.js';
-import { recoveryNodeFields, type IssuerRecoveryAuthority, type RecoveryPairedEnrollment } from './issuer-recovery.js';
+import { type IssuerRecoveryAuthority } from './issuer-recovery.js';
 import { trustRootPayload, validateTrustRoot, type TrustRoot } from './trust-root.js';
-import { initializationReference, submissionReferences, transitionBytes, transitionHash, recoveryManifestHash, recoveryAdminHash, recoveryEnvelopesHash, recoveryRootHash, legacyStateHash, digest, type RecoveryAuthorityTransition, type RecoveryTransitionSubmission, type AcceptedRecoveryTransition } from './recovery-authority-wire.js';
-import { recoveredSubmissionReferences, recoveredEnrollmentBytes, recoveredDeviceHash, recoveredRightsHash, recoveredGrantsHash, recoveredEnvelopesHash, type RecoveredEnrollment, type RecoveredDeviceSubmission, type AcceptedRecoveredDevice } from './recovered-device-wire.js';
+import { initializationReference, transitionBytes, recoveryManifestHash, recoveryAdminHash, recoveryEnvelopesHash, recoveryRootHash, digest, type RecoveryAuthorityTransition, type RecoveryTransitionSubmission } from './recovery-authority-wire.js';
+import { recoveredEnrollmentBytes, recoveredRightsHash, recoveredGrantsHash, recoveredEnvelopesHash, type RecoveredEnrollment, type RecoveredDeviceSubmission } from './recovered-device-wire.js';
 import type { OriginalInitialization } from './initialization-evidence.js';
 
 export const recoveryDAGCapability = 'issuer-recovery-dag-v1';
@@ -18,9 +17,9 @@ import { strictRecoveryJson } from './strict-recovery-body.js';
 const b64 = (v: Uint8Array): string => Buffer.from(v).toString('base64url');
 const compare = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
 function fail(): never { throw new Fault(400, 'recovery_dag_invalid'); }
-export type RecoveryDAGKind = 'transition-v1' | 'recovered-v1' | 'transition-v2' | 'recovered-v2';
+export type RecoveryDAGKind = 'transition-v2' | 'recovered-v2';
 export interface RecoveryDependency { kind: RecoveryDAGKind; referenceHash: string }
-export type DAGPairedEnrollment = Omit<RecoveryPairedEnrollment, 'certificateVersion'> & { certificateVersion: '1' | '2' | '3' | '4' | '5' };
+export type DAGPairedEnrollment = { certificateVersion: '5'; issuerProofHash: string; approval: import('./enrollment-wire.js').EnrollmentCertificate };
 export type DAGArchive = { kind: 'paired'; enrollment: DAGPairedEnrollment } | { kind: 'recovered'; recoveryEnrollmentHash: string };
 export interface RecoverySourceView {
   profile: typeof recoverySourceViewProfile; accountId: string; accountGeneration: string;
@@ -29,7 +28,7 @@ export interface RecoverySourceView {
   targets: { environmentId: string; authorityHash: string }[];
   origins: SignedEnvironmentOrigin[]; identityPaths: DAGArchive[][]; dependencies: RecoveryDependency[];
 }
-export type RecoverySource = { kind: 'proof2'; proof: IssuerOriginProof } | { kind: 'proof3'; view: RecoverySourceView };
+export type RecoverySource = { kind: 'proof3'; view: RecoverySourceView };
 export type RecoveryAuthorityTransitionV2 = RecoveryAuthorityTransition;
 export type RecoveryTransitionSubmissionV2 = Omit<RecoveryTransitionSubmission, 'issuerEvidence'> & { issuerEvidence: RecoverySource | null };
 export interface AcceptedRecoveryTransitionV2 { submission: RecoveryTransitionSubmissionV2; sequence: number }
@@ -37,8 +36,6 @@ export type RecoveredDeviceEnrollmentV2 = RecoveredEnrollment;
 export type RecoveredDeviceSubmissionV2 = Omit<RecoveredDeviceSubmission, 'certificateVersion' | 'capabilities' | 'issuerEvidence'> & { certificateVersion: '5'; capabilities: [typeof recoveryDAGCapability]; issuerEvidence: RecoverySource };
 export interface AcceptedRecoveredDeviceV2 { submission: RecoveredDeviceSubmissionV2; sequence: number }
 export type RecoveryDAGRecord =
-  { kind: 'transition-v1'; record: AcceptedRecoveryTransition } |
-  { kind: 'recovered-v1'; record: AcceptedRecoveredDevice } |
   { kind: 'transition-v2'; record: AcceptedRecoveryTransitionV2 } |
   { kind: 'recovered-v2'; record: AcceptedRecoveredDeviceV2 };
 export interface RecoveryDependencyBundle { initialization: OriginalInitialization; records: RecoveryDAGRecord[] }
@@ -49,11 +46,8 @@ export interface IssuerRecoveryDAG {
 export interface RecoveryTransitionCommandV2 { submission: RecoveryTransitionSubmissionV2; dependencyBundle: RecoveryDependencyBundle }
 export interface RecoveredDeviceCommandV2 { submission: RecoveredDeviceSubmissionV2; dependencyBundle: RecoveryDependencyBundle }
 
-function domain(encoded: Uint8Array, value: string): Uint8Array {
-  const fields: string[] = JSON.parse(new TextDecoder().decode(encoded)); fields[0] = value; return canonical(fields);
-}
-export const transitionBytesV2 = (t: RecoveryAuthorityTransitionV2): Uint8Array => domain(transitionBytes(t), 'harmonia/recovery-authority-transition/v2');
-export const recoveredEnrollmentBytesV2 = (e: RecoveredDeviceEnrollmentV2): Uint8Array => domain(recoveredEnrollmentBytes(e), 'harmonia/recovered-device-enrollment/v2');
+export const transitionBytesV2 = (t: RecoveryAuthorityTransitionV2): Uint8Array => transitionBytes(t);
+export const recoveredEnrollmentBytesV2 = (e: RecoveredDeviceEnrollmentV2): Uint8Array => recoveredEnrollmentBytes(e);
 export function transitionHashV2(s: RecoveryTransitionSubmissionV2): string {
   bytes(s.authorizationSignature, 64); bytes(s.newRecoverySignature, 64);
   return hash(['harmonia/recovery-authority-transition-ref/v2', b64(transitionBytesV2(s.transition)), s.authorizationSignature, s.newRecoverySignature]);
@@ -63,7 +57,7 @@ export function recoveredDeviceHashV2(s: RecoveredDeviceSubmissionV2): string {
   return hash(['harmonia/recovered-device-enrollment-ref/v2', b64(recoveredEnrollmentBytesV2(s.enrollment)), s.recoverySignature, s.deviceSignature]);
 }
 export function dagArchiveFields(n: DAGPairedEnrollment): string[] {
-  if (n.certificateVersion !== '5') return recoveryNodeFields(n as RecoveryPairedEnrollment);
+  if (n.certificateVersion !== '5') fail();
   exact(n, ['certificateVersion', 'issuerProofHash', 'approval']); digest(n.issuerProofHash);
   exact(n.approval, ['context', 'pairingProfile', 'transcriptHash', 'grants', 'approverSignature', 'initiatorSignature']);
   const c = n.approval.context;
@@ -73,7 +67,7 @@ export function dagArchiveFields(n: DAGPairedEnrollment): string[] {
   for (const pub of [c.initiatorSigningPublicKey, c.initiatorReceivingPublicKey, c.approverSigningPublicKey, c.approverReceivingPublicKey]) bytes(pub, 32);
   if (c.purpose !== 'enroll-device' || c.initiatorDeviceId === c.approverDeviceId || c.initiatorSigningPublicKey === c.initiatorReceivingPublicKey || c.approverSigningPublicKey === c.approverReceivingPublicKey || BigInt(c.expiresAt) > 253402300799n || n.approval.pairingProfile !== pairingProfile) fail();
   bytes(n.approval.approverSignature, 64); bytes(n.approval.initiatorSignature!, 64);
-  const fields = enrollmentFields(n.approval); fields[0] = 'harmonia/device-enrollment/v5'; fields.push(n.issuerProofHash); return fields;
+  return ['harmonia/device-enrollment/v5', ...enrollmentFields(n.approval), n.issuerProofHash];
 }
 export function dagPathRows(path: DAGArchive[]): string[][] {
   if (!Array.isArray(path) || path.length > 32) fail();
@@ -85,7 +79,7 @@ export function dagPathRows(path: DAGArchive[]): string[][] {
 export function dependencyRows(deps: RecoveryDependency[]): string[][] {
   if (!Array.isArray(deps) || deps.length > 256) fail(); const seen = new Set<string>();
   return [...deps].sort((a, b) => compare(a.kind, b.kind) || compare(a.referenceHash, b.referenceHash)).map(d => {
-    exact(d, ['kind', 'referenceHash']); if (!['transition-v1', 'recovered-v1', 'transition-v2', 'recovered-v2'].includes(d.kind) || seen.has(d.referenceHash)) fail();
+    exact(d, ['kind', 'referenceHash']); if (!['transition-v2', 'recovered-v2'].includes(d.kind) || seen.has(d.referenceHash)) fail();
     digest(d.referenceHash); seen.add(d.referenceHash); return [d.kind, d.referenceHash];
   });
 }
@@ -110,7 +104,6 @@ export function sourceViewCanonical(v: RecoverySourceView): Uint8Array {
   if (encoded.length > maxRecoveryDAGBytes) fail(); return encoded;
 }
 export function sourceCanonical(s: RecoverySource): Uint8Array {
-  if (s.kind === 'proof2') { exact(s, ['kind', 'proof']); return canonical(['harmonia/recovery-source/v1', 'proof2', 'harmonia/issuer-proof/v2', b64(issuerOriginCanonical(s.proof))]); }
   if (s.kind !== 'proof3') fail(); exact(s, ['kind', 'view']); return canonical(['harmonia/recovery-source/v1', 'proof3', recoverySourceViewProfile, b64(sourceViewCanonical(s.view))]);
 }
 export const sourceHash = (s: RecoverySource): string => Buffer.from(sha256(sourceCanonical(s))).toString('hex');
@@ -126,8 +119,6 @@ export function recordRow(r: RecoveryDAGRecord): string[] {
   exact(r, ['kind', 'record']); exact(r.record, ['submission', 'sequence']);
   let reference: string, signing: Uint8Array, a: string, b: string;
   switch (r.kind) {
-    case 'transition-v1': submissionReferences(r.record.submission); reference = transitionHash(r.record.submission); signing = transitionBytes(r.record.submission.transition); a = r.record.submission.authorizationSignature; b = r.record.submission.newRecoverySignature; break;
-    case 'recovered-v1': recoveredSubmissionReferences(r.record.submission); reference = recoveredDeviceHash(r.record.submission); signing = recoveredEnrollmentBytes(r.record.submission.enrollment); a = r.record.submission.recoverySignature; b = r.record.submission.deviceSignature; break;
     case 'transition-v2': transitionReferencesV2(r.record.submission); reference = transitionHashV2(r.record.submission); signing = transitionBytesV2(r.record.submission.transition); a = r.record.submission.authorizationSignature; b = r.record.submission.newRecoverySignature; break;
     case 'recovered-v2': recoveredReferencesV2(r.record.submission); reference = recoveredDeviceHashV2(r.record.submission); signing = recoveredEnrollmentBytesV2(r.record.submission.enrollment); a = r.record.submission.recoverySignature; b = r.record.submission.deviceSignature; break;
     default: return fail();
@@ -146,13 +137,11 @@ export function dagCanonical(p: IssuerRecoveryDAG): Uint8Array {
 }
 export const dagHash = (p: IssuerRecoveryDAG): string => Buffer.from(sha256(dagCanonical(p))).toString('hex');
 export function transitionReferencesV2(s: RecoveryTransitionSubmissionV2): void {
-  exact(s, ['transition', 'environmentManifest', 'authoritySet', 'issuerEvidence', 'envelopes', 'newTrustRoot', 'legacyState', 'authorizationSignature', 'newRecoverySignature']);
+  exact(s, ['transition', 'environmentManifest', 'authoritySet', 'issuerEvidence', 'envelopes', 'newTrustRoot', 'authorizationSignature', 'newRecoverySignature']);
   const t = s.transition; transitionBytesV2(t); bytes(s.authorizationSignature, 64); bytes(s.newRecoverySignature, 64);
   if (recoveryManifestHash(s.environmentManifest) !== t.environmentManifestHash || recoveryEnvelopesHash(s.envelopes) !== t.envelopesHash || recoveryRootHash(t.accountId, t.accountGeneration, s.newTrustRoot) !== t.newTrustRootHash || s.envelopes.length !== s.environmentManifest.length || s.envelopes.some((e, i) => e.environmentId !== s.environmentManifest[i]!.environmentId || e.keyVersion !== s.environmentManifest[i]!.keyVersion)) fail();
   if (t.authorizationKind === 'old-recovery') { if (!Array.isArray(s.authoritySet) || s.authoritySet.length || s.issuerEvidence !== null) fail(); }
   else if (!s.issuerEvidence || recoveryAdminHash(s.authoritySet) !== t.authoritySetHash || sourceHash(s.issuerEvidence) !== t.issuerEvidenceHash || s.authoritySet.length !== s.environmentManifest.length) fail();
-  if (t.chainMode === 'continuous') { if (s.legacyState !== null) fail(); }
-  else if (!s.legacyState || legacyStateHash(t.accountId, t.accountGeneration, s.legacyState) !== t.legacyStateHash) fail();
   if (Buffer.byteLength(JSON.stringify(s)) > maxRecoveryDAGBytes) fail();
 }
 export function recoveredReferencesV2(s: RecoveredDeviceSubmissionV2): void {

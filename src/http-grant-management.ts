@@ -12,6 +12,6 @@ export async function grantManagementRoute(request: Request, store: Store): Prom
     return { handled: true, result: await (match[2] === "grant-status" ? service.status(accountId, credentials, url.searchParams.get("idempotencyKey")!) : service.revocationStatus(accountId, credentials, url.searchParams.get("idempotencyKey")!)) };
   }
   const env = url.searchParams.get("environmentId");
-  if (!env || url.searchParams.getAll("environmentId").length !== 1 || url.searchParams.getAll("capability").length !== 1 || !["issuer-origin-v1", "issuer-recovery-v1", "issuer-recovery-dag-v1"].includes(url.searchParams.get("capability") ?? "") || [...url.searchParams.keys()].some(name => name !== "environmentId" && name !== "capability")) throw new Fault(400, "issuer_origin_capability_required");
-  return { handled: true, result: await (url.searchParams.get("capability") === "issuer-recovery-dag-v1" ? service.controlDAG(accountId, credentials, env) : url.searchParams.get("capability") === "issuer-recovery-v1" ? service.controlRecovery(accountId, credentials, env) : service.control(accountId, credentials, env)) };
+  if (!env || url.searchParams.getAll("environmentId").length !== 1 || url.searchParams.getAll("capability").length !== 1 || url.searchParams.get("capability") !== "issuer-recovery-dag-v1" || [...url.searchParams.keys()].some(name => name !== "environmentId" && name !== "capability")) throw new Fault(400, "issuer_origin_capability_required");
+  return { handled: true, result: await service.controlDAG(accountId, credentials, env) };
 }

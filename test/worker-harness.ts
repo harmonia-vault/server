@@ -5,7 +5,6 @@ import worker from "../src/worker.js";
 import type { Email, EmailTransport } from "../src/email-transport.js";
 import type { Account } from "../src/model.js";
 export class SyntheticRegistry extends InstanceRegistry {
-  restartLegacyScan():void{ this.ctx.storage.sql.exec("DELETE FROM instance_migration"); }
   arm(): void { this.ctx.storage.sql.exec("CREATE TRIGGER IF NOT EXISTS synthetic_registration_fault BEFORE UPDATE ON instance_registration WHEN NEW.completed=1 BEGIN SELECT RAISE(ABORT,'synthetic first decision failure'); END"); }
   disarm(): void { this.ctx.storage.sql.exec("DROP TRIGGER IF EXISTS synthetic_registration_fault"); }
 }

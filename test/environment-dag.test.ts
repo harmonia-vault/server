@@ -22,7 +22,7 @@ import {transitionBytesV2,type RecoveryTransitionCommandV2} from '../src/recover
 import type {SignedGrant} from '../src/model.js';
 
 const capability='issuer-recovery-dag-v1';
-const template=JSON.parse(readFileSync(new URL('./vectors/recovery-authority-v1.json',import.meta.url),'utf8'));
+const template=JSON.parse(readFileSync(new URL('./vectors/recovery-dag-v1.json',import.meta.url),'utf8'));
 // 本层只验真实HTTP/SQLite事务与来源投影；封套/密文为合成字节，真HPKE/PAKE由Go联合测试承担。
 async function harness(kind:'node'|'worker') {
  const initial=await nodeHarness(true),account=structuredClone(initial.read());await initial.close();
@@ -46,15 +46,15 @@ async function harness(kind:'node'|'worker') {
 }
 type H=Awaited<ReturnType<typeof harness>>;
 async function enterDAG(h:H){
- const old=recoveryKeys(Buffer.alloc(32,88),h.account.id,'1'),fresh=recoveryKeys(Buffer.alloc(32,71),h.account.id,'2');
+ const old=recoveryKeys(Buffer.alloc(32,66),h.account.id,'1'),fresh=recoveryKeys(Buffer.alloc(32,71),h.account.id,'2');
  const challenge=await h.send('/recovery-challenges','POST',{accountGeneration:'1'},'login');assert.equal(challenge.status,200);
  const session=await h.send('/recovery-sessions','POST',{accountGeneration:'1',challengeId:challenge.data.challengeId,signature:sign(challenge.data.signingPayload,old.signingSeed)},'login');assert.equal(session.status,200);h.tokens.set('R',session.data.token);
- const c=(await h.send('/recovery-authority-challenges-v2?capability='+capability,'POST',{operationId:'env-dag-transition',authorizationKind:'old-recovery',chainMode:'continuous'},'R')).data;
- const s=structuredClone(template.oldRecoveryTransition.submission),t=s.transition;
- s.environmentManifest=c.environmentManifest;s.authoritySet=[];s.issuerEvidence=null;s.legacyState=null;s.envelopes=c.environmentManifest.map((e:any)=>({...e,envelope:b64(Buffer.alloc(80,71))}));
+ const c=(await h.send('/recovery-authority-challenges-v2?capability='+capability,'POST',{operationId:'env-dag-transition',authorizationKind:'old-recovery'},'R')).data;
+ const s=structuredClone(template.proof.records.find((r: any) => r.kind === 'transition-v2').record.submission),t=s.transition;
+ s.environmentManifest=c.environmentManifest;s.authoritySet=[];s.issuerEvidence=null;s.envelopes=c.environmentManifest.map((e:any)=>({...e,envelope:b64(Buffer.alloc(80,71))}));
  const root=c.dependencyBundle.initialization.proposal.device;
  s.newTrustRoot={rootDeviceId:root.id,rootSigningPublicKey:root.signingPublicKey,rootReceivingPublicKey:root.receivingPublicKey,recoveryGeneration:'2',recoverySigningPublicKey:fresh.signingPublicKey,recoveryReceivingPublicKey:fresh.receivingPublicKey,signature:''};s.newTrustRoot.signature=sign(trustRootPayload(h.account.id,'1',s.newTrustRoot),fresh.signingSeed);
- Object.assign(t,{accountId:h.account.id,accountGeneration:'1',operationId:c.operationId,challengeId:c.challengeId,nonce:c.nonce,expiresAt:String(c.expiresAt),sessionHash:c.sessionHash,expectedSequence:c.expectedSequence,previousTransitionHash:c.previousTransitionHash,oldRecoveryGeneration:'1',oldRecoverySigningPublicKey:old.signingPublicKey,oldRecoveryReceivingPublicKey:old.receivingPublicKey,newRecoveryGeneration:'2',newRecoverySigningPublicKey:fresh.signingPublicKey,newRecoveryReceivingPublicKey:fresh.receivingPublicKey,authorizationKind:'old-recovery',authorizerDeviceId:'',environmentManifestHash:recoveryManifestHash(s.environmentManifest),authoritySetHash:'',issuerEvidenceHash:'',envelopesHash:recoveryEnvelopesHash(s.envelopes),newTrustRootHash:recoveryRootHash(h.account.id,'1',s.newTrustRoot),chainMode:'continuous',legacyStateHash:''});
+ Object.assign(t,{accountId:h.account.id,accountGeneration:'1',operationId:c.operationId,challengeId:c.challengeId,nonce:c.nonce,expiresAt:String(c.expiresAt),sessionHash:c.sessionHash,expectedSequence:c.expectedSequence,previousTransitionHash:c.previousTransitionHash,oldRecoveryGeneration:'1',oldRecoverySigningPublicKey:old.signingPublicKey,oldRecoveryReceivingPublicKey:old.receivingPublicKey,newRecoveryGeneration:'2',newRecoverySigningPublicKey:fresh.signingPublicKey,newRecoveryReceivingPublicKey:fresh.receivingPublicKey,authorizationKind:'old-recovery',authorizerDeviceId:'',environmentManifestHash:recoveryManifestHash(s.environmentManifest),authoritySetHash:'',issuerEvidenceHash:'',envelopesHash:recoveryEnvelopesHash(s.envelopes),newTrustRootHash:recoveryRootHash(h.account.id,'1',s.newTrustRoot)});
  s.authorizationSignature=b64(ed25519.sign(transitionBytesV2(t),old.signingSeed));s.newRecoverySignature=b64(ed25519.sign(transitionBytesV2(t),fresh.signingSeed));
  const command:RecoveryTransitionCommandV2={submission:s,dependencyBundle:c.dependencyBundle};const accepted=await h.send('/recovery-authority-transitions-v2?capability='+capability,'POST',command,'R');assert.equal(accepted.status,200,JSON.stringify(accepted.data));
 }
@@ -79,20 +79,22 @@ for(const backend of ['node','worker'] as const)test(`${backend}真实HTTP/SQLit
   assert.equal((await h.send('/environment-changes-v4','POST',created,'A','1')).status,426);
   assert.equal((await h.send('/environment-changes-v4?extra=1','POST',created)).status,400);
   const accepted=await h.send('/environment-changes-v4','POST',created);assert.equal(accepted.status,200,JSON.stringify(accepted.data));assert.equal(accepted.data.sequence,initial.sequence+1);
-  for(const version of ['2','3','4']){const status=await h.send('/environment-changes-v'+version+'/p4-create');assert.equal(status.status,200);assert.equal(status.data.sequence,accepted.data.sequence);assert.match(status.data.contentHash,/^[a-f0-9]{64}$/);}
-  const replay=await h.send('/environment-changes-v2','POST',created);assert.equal(replay.status,200);assert.equal(replay.data.sequence,accepted.data.sequence);assert.equal(replay.data.replayed,true);
+  for(const version of ['2','3'])assert.equal((await h.send('/environment-changes-v'+version+'/p4-create')).status,404);
+  const status=await h.send('/environment-changes-v4/p4-create');assert.equal(status.status,200);assert.equal(status.data.sequence,accepted.data.sequence);assert.match(status.data.contentHash,/^[a-f0-9]{64}$/);
+  assert.equal((await h.send('/environment-changes-v2','POST',created)).status,404);
+  const replay=await h.send('/environment-changes-v4','POST',created);assert.equal(replay.status,200);assert.equal(replay.data.sequence,accepted.data.sequence);assert.equal(replay.data.replayed,true);
   const conflicting=structuredClone(created);conflicting.change.labelPayload=b64(Buffer.alloc(40,51));conflicting.signature=b64(ed25519.sign(environmentChangeBytes(conflicting.change),seeds.A!));assert.equal((await h.send('/environment-changes-v4','POST',conflicting)).status,409);
-  for(const cap of ['issuer-origin-v1','issuer-recovery-v1'])assert.equal((await h.send('/issuer-evidence?environmentId=env-p4&capability='+cap)).status,426);
+  for(const cap of ['issuer-origin-v1','issuer-recovery-v1'])assert.equal((await h.send('/issuer-evidence?environmentId=env-p4&capability='+cap)).status,400);
   const z=await control(h,'env-p4');
   const own=z.grants[0] as SignedGrant,b=Object.values(h.account.grants).find(g=>g.grant.subjectDeviceId==='device-B')!;
   const reader={...own.grant,subjectDeviceId:b.grant.subjectDeviceId,subjectSigningPublicKey:b.grant.subjectSigningPublicKey,subjectReceivingPublicKey:b.grant.subjectReceivingPublicKey,grantGeneration:'1',role:'ro' as const,expiresAt:String(Math.floor(Date.now()/1000)+600),idempotencyKey:'p4-reader',envelope:b64(Buffer.alloc(80,61))};
   assert.equal((await h.send('/grants','POST',{grant:reader,signature:b64(ed25519.sign(grantBytes(reader),seeds.A!))})).status,200);
   const before=await control(h,'env-p4');assert.equal(before.grants.length,2);
   const renamed={...created.change,operation:'rename' as const,authorityEnvironmentId:'env-p4',authorityKeyVersion:'1',authorityGrantGeneration:'1',previousKeyVersion:'1',keyVersion:'1',expectedSequence:String(before.sequence),idempotencyKey:'p4-rename',grants:[],mutations:[],recoveryEnvelope:'',labelPayload:b64(Buffer.alloc(40,52))};
-  assert.equal((await h.send('/environment-changes','POST',{change:renamed,signature:b64(ed25519.sign(environmentChangeBytes(renamed),seeds.A!))})).status,200);
+  assert.equal((await h.send('/environment-changes-v4','POST',{change:renamed,signature:b64(ed25519.sign(environmentChangeBytes(renamed),seeds.A!))})).status,200);
   const fresh=await control(h,'env-p4'),rotated=packet(h,fresh,'p4-rotate','env-p4','rotate');
-  assert.equal((await h.send('/environment-changes-v3','POST',rotated)).status,426);
-  assert.equal((await h.send('/environment-changes','POST',{change:rotated.change,signature:rotated.signature})).status,426);
+  assert.equal((await h.send('/environment-changes-v3','POST',rotated)).status,404);
+  assert.equal((await h.send('/environment-changes-v4','POST',{change:rotated.change,signature:rotated.signature})).status,400);
   const incomplete=packet(h,{...fresh,grants:fresh.grants.filter((g:SignedGrant)=>g.grant.subjectDeviceId==='device-A')},'p4-rotate-incomplete','env-p4','rotate');
   const missing=await h.send('/environment-changes-v4','POST',incomplete);assert.equal(missing.status,409);assert.equal(missing.data.error,'device_envelope_set_incomplete');
   const stale=packet(h,{...fresh,sequence:fresh.sequence-1},'p4-rotate-stale','env-p4','rotate');assert.equal((await h.send('/environment-changes-v4','POST',stale)).status,409);
@@ -101,27 +103,24 @@ for(const backend of ['node','worker'] as const)test(`${backend}真实HTTP/SQLit
   const after=await control(h,'env-p4');assert.equal(after.grants.length,2);assert.equal(after.grants.find((g:SignedGrant)=>g.grant.subjectDeviceId==='device-B').grant.expiresAt,reader.expiresAt);
   assert.ok(after.grants.every((g:SignedGrant)=>g.grant.keyVersion==='2'&&g.grant.grantGeneration==='2'));
   const deleted={...renamed,operation:'delete' as const,authorityKeyVersion:'2',authorityGrantGeneration:'2',previousKeyVersion:'2',keyVersion:'2',expectedSequence:String(after.sequence),idempotencyKey:'p4-delete',labelPayload:''};
-  assert.equal((await h.send('/environment-changes','POST',{change:deleted,signature:b64(ed25519.sign(environmentChangeBytes(deleted),seeds.A!))})).status,200);
+  assert.equal((await h.send('/environment-changes-v4','POST',{change:deleted,signature:b64(ed25519.sign(environmentChangeBytes(deleted),seeds.A!))})).status,200);
   const tombstone=await h.send('/pull?after=0&scope=authorizations&capability='+capability,'GET',undefined,'B');assert.equal(tombstone.status,200,JSON.stringify(tombstone.data));assert.deepEqual(tombstone.data.events,[]);assert.ok(tombstone.data.environmentEvents.some((e:any)=>e.change.change.idempotencyKey==='p4-delete'));
  }finally{await h.close();}
 });
 
-test('旧已接受V2包进入DAG后仍仅返回原收据；新旧路由/当前降权不能变成新写',async()=>{
+test('当前原包重试幂等，所有旧环境路由都拒绝重放；降权立即拒绝重新提交',async()=>{
  const h=await harness('node');try{
-  const old=await h.send('/issuer-evidence?environmentId=env-fixture&capability=issuer-origin-v1');assert.equal(old.status,200);
-  old.data.issuerEvidence={source:{view:{trustRoot:old.data.issuerEvidence.trustRoot}}};
-  const original=packet(h,old.data,'pre-dag-original','env-pre-dag','create');
-  const accepted=await h.send('/environment-changes-v2','POST',original);assert.equal(accepted.status,200,JSON.stringify(accepted.data));
-  const receipt=await h.send('/environment-changes-v2/pre-dag-original');
-  await enterDAG(h);
-  const replay=await h.send('/environment-changes-v4','POST',original);assert.equal(replay.status,200,JSON.stringify(replay.data));assert.equal(replay.data.sequence,accepted.data.sequence);assert.equal(replay.data.replayed,true);
-  const migrated=await h.send('/environment-changes-v4/pre-dag-original');assert.deepEqual(migrated.data,receipt.data);
-  const current=await control(h,'env-fixture'),pending=packet(h,current,'after-dag-stale','env-after-dag-stale','create');
+  const initial=await control(h,'env-fixture'),original=packet(h,initial,'dag-original','env-current','create');
+  const accepted=await h.send('/environment-changes-v4','POST',original);assert.equal(accepted.status,200,JSON.stringify(accepted.data));
+  const replay=await h.send('/environment-changes-v4','POST',original);assert.equal(replay.status,200);assert.equal(replay.data.replayed,true);assert.equal(replay.data.sequence,accepted.data.sequence);
+  for(const route of ['/environment-changes','/environment-changes-v2','/environment-changes-v3']) {
+    assert.equal((await h.send(route,'POST',original)).status,404);
+    assert.equal((await h.send(route+'/dag-original')).status,404);
+  }
+  const current=await control(h,'env-fixture');assert.equal(current.sequence,accepted.data.sequence);
   const g={...current.grants.find((g:SignedGrant)=>g.grant.subjectDeviceId==='device-A').grant,grantGeneration:'2',role:'ro' as const,idempotencyKey:'actor-demote'};
-  const downgrade=await h.send('/grants','POST',{grant:g,signature:b64(ed25519.sign(grantBytes(g),seeds.A!))});assert.equal(downgrade.status,200);
-  assert.equal((await h.send('/environment-changes-v4','POST',pending)).status,403);
+  assert.equal((await h.send('/grants','POST',{grant:g,signature:b64(ed25519.sign(grantBytes(g),seeds.A!))})).status,200);
   assert.equal((await h.send('/environment-changes-v4','POST',original)).status,403);
-  assert.deepEqual((await h.send('/environment-changes-v4/after-dag-stale')).data,{state:'unknown'});
-  assert.deepEqual((await h.send('/environment-changes-v4/pre-dag-original')).data,receipt.data);
+  const receipt=await h.send('/environment-changes-v4/dag-original');assert.equal(receipt.data.sequence,accepted.data.sequence);
  }finally{await h.close();}
 });

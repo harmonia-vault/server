@@ -78,13 +78,13 @@ export function operationChallengeHash(accountId: string, kind: OperationKind, i
   const base = ['harmonia/recovery-operation-challenge/v1', kind, accountId, input.accountGeneration, input.operationId, input.challengeId, input.nonce, String(input.expiresAt)];
   if (kind === 'transition-v2') {
     const c = input as DAGAuthorityChallenge;
-    exact(c, ['operationId', 'challengeId', 'nonce', 'expiresAt', 'sessionHash', 'accountGeneration', 'authorizationKind', 'chainMode', 'authorizerDeviceId', 'expectedSequence', 'previousTransitionHash', 'oldRecoveryGeneration', 'oldRecoverySigningPublicKey', 'oldRecoveryReceivingPublicKey', 'environmentManifest', 'authoritySet', 'issuerEvidence', 'dependencyBundle']);
-    if (c.chainMode !== 'continuous' || !['old-recovery', 'all-environments-admin'].includes(c.authorizationKind)) throw new Fault(400, 'fields_invalid');
+    exact(c, ['operationId', 'challengeId', 'nonce', 'expiresAt', 'sessionHash', 'accountGeneration', 'authorizationKind', 'authorizerDeviceId', 'expectedSequence', 'previousTransitionHash', 'oldRecoveryGeneration', 'oldRecoverySigningPublicKey', 'oldRecoveryReceivingPublicKey', 'environmentManifest', 'authoritySet', 'issuerEvidence', 'dependencyBundle']);
+    if (!['old-recovery', 'all-environments-admin'].includes(c.authorizationKind)) throw new Fault(400, 'fields_invalid');
     digest(c.sessionHash); digest(c.previousTransitionHash); generation(c.oldRecoveryGeneration);
     bytes(c.oldRecoverySigningPublicKey, 32); bytes(c.oldRecoveryReceivingPublicKey, 32);
     if (c.authorizationKind === 'old-recovery' ? c.authorizerDeviceId !== '' || c.issuerEvidence !== null || c.authoritySet.length !== 0 : c.authorizerDeviceId === '' || c.issuerEvidence === null) throw new Fault(400, 'fields_invalid');
     if (c.authorizerDeviceId) identifier(c.authorizerDeviceId);
-    return hash([...base, c.sessionHash, c.authorizationKind, c.chainMode, c.authorizerDeviceId, c.expectedSequence, c.previousTransitionHash, c.oldRecoveryGeneration, c.oldRecoverySigningPublicKey, c.oldRecoveryReceivingPublicKey, recoveryManifestHash(c.environmentManifest), c.authorizationKind === 'old-recovery' ? hash(['harmonia/recovery-admin-authorities/v1', []]) : recoveryAdminHash(c.authoritySet), c.issuerEvidence ? sourceHash(c.issuerEvidence) : '', dependencyBasisHash(c.dependencyBundle)]);
+    return hash([...base, c.sessionHash, c.authorizationKind, c.authorizerDeviceId, c.expectedSequence, c.previousTransitionHash, c.oldRecoveryGeneration, c.oldRecoverySigningPublicKey, c.oldRecoveryReceivingPublicKey, recoveryManifestHash(c.environmentManifest), c.authorizationKind === 'old-recovery' ? hash(['harmonia/recovery-admin-authorities/v1', []]) : recoveryAdminHash(c.authoritySet), c.issuerEvidence ? sourceHash(c.issuerEvidence) : '', dependencyBasisHash(c.dependencyBundle)]);
   }
   const c = input as DAGRecoveredChallenge;
   exact(c, ['operationId', 'challengeId', 'nonce', 'expiresAt', 'restrictedSessionHash', 'accountGeneration', 'expectedSequence', 'recoveryGeneration', 'recoveryTransitionHash', 'deviceId', 'deviceSigningPublicKey', 'deviceReceivingPublicKey', 'issuerEvidence', 'dependencyBundle']);

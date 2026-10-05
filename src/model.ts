@@ -19,9 +19,9 @@ export interface Event { sequence: number; mutation: SignedMutation; authorizati
 export interface Session { tokenHash: string; generation: string; expiresAt: number; kind: "login" | "recovery"; deviceId?: string; recoveryGeneration?: string; rotationRequired?: boolean; id?: string }
 export interface DeviceChallenge { id: string; deviceId: string; sessionHash: string; nonce: string; expiresAt: number; generation: string }
 export interface Account {
-  schema: 1; id: string; email: string; generation: string; verified: boolean; passwordVerifier: string;
-  verificationRequiredAtRegistration?: boolean;
-  registrationAdmission?: import("./registration.js").RegistrationAdmission;
+  schema: 2; id: string; email: string; generation: string; verified: boolean; passwordVerifier: string;
+  verificationRequiredAtRegistration: boolean;
+  registrationAdmission: import("./registration.js").RegistrationAdmission;
   sequence: number; devices: Record<string, Device>; environments: Record<string, Environment>;
   grants: Record<string, SignedGrant>; sessions: Session[]; deviceChallenges: DeviceChallenge[]; events: Event[];
   idempotency: Record<string, { content: string; sequence: number }>;
@@ -38,16 +38,15 @@ export interface Account {
   bootChallenges?: import("./lifecycle-wire.js").BootChallenge[];
   recoveryChallenges?: import("./lifecycle-wire.js").RecoveryChallenge[];
   recoveryOperationClosures?: import("./recovery-operation-guards.js").RecoveryOperationClosures;
-  recoveryRotations?: Record<string, import("./lifecycle-wire.js").RotationRecord>;
 }
 export interface Auth { token: string; deviceId: string; accountGeneration: string }
 export interface Pull {
   accountId: string; accountGeneration: string; sequence: number;
   grants: SignedGrant[]; events: Event[]; scope?: "authorizations";
   environmentEvents?: import("./environments.js").EnvironmentEvent[];
-  issuerEvidence?: import("./issuer-origin.js").IssuerOriginProof | import("./issuer-recovery.js").IssuerRecoveryProof | import("./recovery-dag-wire.js").IssuerRecoveryDAG | null;
+  issuerEvidence: import("./recovery-dag-wire.js").IssuerRecoveryDAG | null;
 }
 export class Fault extends Error {
-  constructor(public readonly status: number, public readonly code: string) { super(code); }
+  constructor(public readonly status: number, public readonly code: string, public readonly retryAfterSeconds?: number) { super(code); }
 }
 export const grantKey = (environmentId: string, deviceId: string): string => `${environmentId}/${deviceId}`;

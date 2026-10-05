@@ -11,7 +11,7 @@ import type {DAGAuthorityChallenge, DAGRecoveredChallenge} from '../src/recovery
 import {pendingRecoveryOperationIds,assertRecoveryOperationCapacity,type RecoveryOperationAccount} from '../src/recovery-operation-guards.js';
 
 const create = async (h: ClosureHarness,id: string, who='R') => {
-  const r=await h.send(`/recovery-authority-challenges-v2?${dagCap}`,'POST',{operationId:id,authorizationKind:who==='A'?'all-environments-admin':'old-recovery',chainMode:'continuous'},who);
+  const r=await h.send(`/recovery-authority-challenges-v2?${dagCap}`,'POST',{operationId:id,authorizationKind:who==='A'?'all-environments-admin':'old-recovery'},who);
   assert.equal(r.status,200,r.data.error);return r.data as DAGAuthorityChallenge;
 };
 const close = async (h: ClosureHarness,t: Parameters<ClosureHarness['request']>[0],mode: 'query'|'resolve-or-close'='resolve-or-close', who='S') => h.send(resolutionPath,'POST',await h.request(t,mode,who),who);
@@ -45,14 +45,15 @@ for (const runtime of ['NodeTCP','workerd'] as const) {
       await h.session('R');await h.session('S');const t=await intentTarget(h,'intent-never-arrived');const before=(await h.read()).sequence;
       assert.equal((await close(h,t,'query')).data.state,'pending');assert.equal((await h.read()).recoveryOperationClosures,undefined);
       const r=await close(h,t);assert.equal(r.status,200,r.data.error);assert.equal(r.data.observedChallengeHash,null);assert.equal(r.data.sequence,before+1);
-      const late=await h.send(`/recovery-authority-challenges-v2?${dagCap}`,'POST',{operationId:t.operationId,authorizationKind:'old-recovery',chainMode:'continuous'});assert.equal(late.data.error,'operation_closed');
+      const late=await h.send(`/recovery-authority-challenges-v2?${dagCap}`,'POST',{operationId:t.operationId,authorizationKind:'old-recovery'});assert.equal(late.data.error,'operation_closed');
       const device={operationId:t.operationId,deviceId:'late-device',deviceSigningPublicKey:b64(ed25519.getPublicKey(localEd)),deviceReceivingPublicKey:b64(x25519.getPublicKey(localX))};
-      for(const route of [`/recovered-device-challenges-v2?${dagCap}`,'/recovered-device-challenges?capability=issuer-recovery-v1']) assert.equal((await h.send(route,'POST',device)).data.error,'operation_closed');
-      assert.equal((await h.send('/recovery-authority-challenges?capability=issuer-recovery-v1','POST',{operationId:t.operationId,authorizationKind:'old-recovery',chainMode:'continuous'})).data.error,'operation_closed');
+      assert.equal((await h.send(`/recovered-device-challenges-v2?${dagCap}`,'POST',device)).data.error,'operation_closed');
+      assert.equal((await h.send('/recovered-device-challenges?capability=issuer-recovery-v1','POST',device)).status,404);
+      assert.equal((await h.send('/recovery-authority-challenges?capability=issuer-recovery-v1','POST',{operationId:t.operationId,authorizationKind:'old-recovery'})).data.error,'not_found');
       const other=await create(h,'other-valid-id'),p=transitionCommand(h,other),proposal={idempotencyKey:t.operationId,newRecoveryGeneration:p.submission.transition.newRecoveryGeneration,newRecoverySigningPublicKey:p.submission.transition.newRecoverySigningPublicKey,newRecoveryReceivingPublicKey:p.submission.transition.newRecoveryReceivingPublicKey,envelopes:p.submission.envelopes,newTrustRoot:p.submission.newTrustRoot};
-      assert.equal((await h.send('/recovery-rotations','POST',proposal)).data.error,'operation_closed');assert.equal((await h.send(`/recovery-rotations/${t.operationId}/complete`,'POST',{challengeId:other.challengeId,signature:p.submission.newRecoverySignature})).data.error,'operation_closed');
+      assert.equal((await h.send('/recovery-rotations','POST',proposal)).data.error,'not_found');assert.equal((await h.send(`/recovery-rotations/${t.operationId}/complete`,'POST',{challengeId:other.challengeId,signature:p.submission.newRecoverySignature})).data.error,'not_found');
       // 新墓碑不应关闭未使用能力的其他legacy ID。
-      assert.equal((await h.send('/recovery-authority-challenges?capability=issuer-recovery-v1','POST',{operationId:'distinct-legacy',authorizationKind:'old-recovery',chainMode:'continuous'})).status,200);
+      assert.equal((await h.send('/recovery-authority-challenges?capability=issuer-recovery-v1','POST',{operationId:'distinct-legacy',authorizationKind:'old-recovery'})).status,404);
       const lost=await intentTarget(h,'challenge-response-lost');await create(h,lost.operationId);const observed=await close(h,lost);assert.equal(observed.status,200,observed.data.error);assert.match(observed.data.observedChallengeHash,/^[0-9a-f]{64}$/);
       assert.equal((await close(h,{...lost,declaredIntentHash:hash(['another-claim'])})).status,409);
       const collision=await intentTarget(h,'collision-existing'),c=await create(h,collision.operationId),known=challengedTarget(collision,c);
@@ -62,7 +63,7 @@ for (const runtime of ['NodeTCP','workerd'] as const) {
   test(`${runtime} 4/6：实际并发HTTP create/close和submit/close，独立SQLite连接或同账号DO线性化`,{timeout:40000},async()=>{
     const h=await closureHarness(runtime);try {
       await h.session('R');await h.session('S');const t=await intentTarget(h,'concurrent-create'),request=await h.request(t,'resolve-or-close');
-      const [created,closed]=await Promise.all([h.send(`/recovery-authority-challenges-v2?${dagCap}`,'POST',{operationId:t.operationId,authorizationKind:'old-recovery',chainMode:'continuous'},'R',{peer:true}),h.send(resolutionPath,'POST',request,'S')]);
+      const [created,closed]=await Promise.all([h.send(`/recovery-authority-challenges-v2?${dagCap}`,'POST',{operationId:t.operationId,authorizationKind:'old-recovery'},'R',{peer:true}),h.send(resolutionPath,'POST',request,'S')]);
       assert.ok(created.status===200||created.data.error==='operation_closed');assert.equal(closed.status,200,closed.data.error);assert.equal(closed.data.state,'closed');const a=await h.read();assert.equal(a.sequence,Number(t.basis.expectedSequence)+1);assert.equal(a.recoveryDAGChallenges?.[t.operationId],undefined);
       const t0=await intentTarget(h,'concurrent-submit'),c=await create(h,t0.operationId),p=transitionCommand(h,c),sealed=sealedTarget(challengedTarget(t0,c),p),req=await h.request(sealed,'resolve-or-close');
       const [submitted,resolved]=await Promise.all([h.send(`/recovery-authority-transitions-v2?${dagCap}`,'POST',p,'R',{peer:true}),h.send(resolutionPath,'POST',req,'S')]);
@@ -77,11 +78,11 @@ for (const runtime of ['NodeTCP','workerd'] as const) {
       const c=await create(h,'later-generation'),p=transitionCommand(h,c);assert.equal((await h.send(`/recovery-authority-transitions-v2?${dagCap}`,'POST',p)).status,200);
       await h.session('S',Buffer.alloc(32,71),'2');assert.deepEqual((await close(h,t,'query')).data,closed.data);await h.restart();assert.deepEqual((await close(h,t,'query')).data,closed.data);
       await h.session('R',Buffer.alloc(32,71),'2');const held=await intentTarget(h,'preexisting-budget-reservation'),ch=await create(h,held.operationId),heldTarget=challengedTarget(held,ch),a=await h.read(),template=a.recoveryOperationClosures!.entries[t.operationId]!;
-      for(let i=0;i<255;i++){const id='budget-'+i,entry=structuredClone(template);entry.target.operationId=id;entry.targetHash=resolutionTargetHash(entry.target);entry.sequence=++a.sequence;a.recoveryOperationClosures!.entries[id]=entry;}
-      assert.deepEqual([...pendingRecoveryOperationIds(a)],[held.operationId]);const allocationBoundary=structuredClone(a);delete allocationBoundary.recoveryOperationClosures!.entries['budget-254'];delete allocationBoundary.recoveryDAGChallenges![held.operationId];assert.doesNotThrow(()=>assertRecoveryOperationCapacity(allocationBoundary,'new-at-255'));allocationBoundary.recoveryDAGChallenges![held.operationId]=ch;assert.throws(()=>assertRecoveryOperationCapacity(allocationBoundary,'new-at-256'),/account_capacity_reached/);
+      for(let i=0;i<254;i++){const id='budget-'+i,entry=structuredClone(template);entry.target.operationId=id;entry.targetHash=resolutionTargetHash(entry.target);entry.sequence=++a.sequence;a.recoveryOperationClosures!.entries[id]=entry;}
+      assert.deepEqual([...pendingRecoveryOperationIds(a)],[held.operationId]);const allocationBoundary=structuredClone(a);delete allocationBoundary.recoveryDAGChallenges![held.operationId];assert.doesNotThrow(()=>assertRecoveryOperationCapacity(allocationBoundary,'new-at-255'));allocationBoundary.recoveryDAGChallenges![held.operationId]=ch;assert.throws(()=>assertRecoveryOperationCapacity(allocationBoundary,'new-at-256'),/account_capacity_reached/);
       await h.replace(a);const unknown=await intentTarget(h,'no-budget-new-id'),blocked=await close(h,unknown);assert.equal(blocked.status,503);assert.equal(blocked.data.error,'account_capacity_reached');assert.equal((await h.read()).sequence,a.sequence);assert.deepEqual((await close(h,t,'query')).data,closed.data);
-      assert.equal((await h.send(`/recovery-authority-challenges-v2?${dagCap}`,'POST',{operationId:'new-reservation',authorizationKind:'old-recovery',chainMode:'continuous'})).status,503);
-      const swapped=await close(h,heldTarget);assert.equal(swapped.status,200,swapped.data.error);assert.equal(swapped.data.sequence,a.sequence+1);assert.equal(Object.keys((await h.read()).recoveryOperationClosures!.entries).length,257);
+      assert.equal((await h.send(`/recovery-authority-challenges-v2?${dagCap}`,'POST',{operationId:'new-reservation',authorizationKind:'old-recovery'})).status,503);
+      const swapped=await close(h,heldTarget);assert.equal(swapped.status,200,swapped.data.error);assert.equal(swapped.data.sequence,a.sequence+1);assert.equal(Object.keys((await h.read()).recoveryOperationClosures!.entries).length,256);
     }finally{await h.close();}
     const full=await closureHarness(runtime);try{
       await full.session('R');await full.session('S');const target=await intentTarget(full,'no-byte-space'),a=await full.read(),padded=a as RecoveryOperationAccount&{syntheticCapacityPadding:string};padded.syntheticCapacityPadding='x'.repeat(1_000_000-Buffer.byteLength(JSON.stringify(a))-128);assert.ok(Buffer.byteLength(JSON.stringify(padded))<1_000_000);await full.replace(padded);

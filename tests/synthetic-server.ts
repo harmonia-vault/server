@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { nodeStore } from "../src/node-store.js";
 import { VaultService } from "../src/service.js";
 import { nodeServer } from "../src/node-runtime.js";
-import { fixtureAccount, seeds, email, clientCredential, recoverySeed, recoveryKeys } from "../test/fixtures.js";
+import { fixtureAccount, clearVault, seeds, email, clientCredential, recoverySeed, recoveryKeys } from "../test/fixtures.js";
 const dir = mkdtempSync(join(tmpdir(), "harmonia-synthetic-http-"));
 const { store, sql } = nodeStore(join(dir, "synthetic.sqlite"));
 const a = await fixtureAccount(); a.sessions = [];
@@ -25,8 +25,7 @@ if (process.argv.includes("--with-trust-root")) {
 }
 if (process.argv.includes("--empty-vault")) {
   // 测试首次管理手机初始化：保留合成登录账户，不能沿用任何夹具设备权限。
-  a.devices = {}; a.environments = {}; a.grants = {}; a.grantHistory = []; a.events = []; a.sequence = 0;
-  a.recoveryGeneration = "0"; a.recoverySigningPublicKey = null; delete a.recoveryReceivingPublicKey; delete a.trustRoot;
+  clearVault(a);
 }
 store.create(a);
 const capturedEmails: Email[] = [], capture = process.argv.includes("--capture-email");
@@ -40,7 +39,7 @@ server.listen(0, "127.0.0.1", () => {
     syntheticSigningSeeds: Object.fromEntries(Object.entries(seeds).map(([id, key]) => [id, Buffer.from(key).toString("base64url")])),
     devices: a.devices, grants: Object.values(a.grants), recoveryGeneration: a.recoveryGeneration,
     recoverySigningPublicKey: a.recoverySigningPublicKey, recoveryReceivingPublicKey: a.recoveryReceivingPublicKey,
-    trustRoot: a.trustRoot ?? null, emailCapture: capture, syntheticRecoverySeed: Buffer.from(recoverySeed).toString("base64url") }));
+    dagEnrollments: a.dagDeviceEnrollments ?? {}, trustRoot: a.trustRoot ?? null, emailCapture: capture, syntheticRecoverySeed: Buffer.from(recoverySeed).toString("base64url") }));
 });
 function stop(): void { closeNotifications(); server.close(() => { sql.close(); rmSync(dir, { recursive: true, force: true }); process.exit(0); }); }
 process.on("SIGTERM", stop); process.on("SIGINT", stop);

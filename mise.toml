@@ -1,6 +1,9 @@
 [tools]
 node = "24.16.0"
 pnpm = "11.5.2"
+actionlint = "1.7.12"
+shellcheck = "0.11.0"
+gh = "2.102.0"
 
 [tasks.deps]
 run = "pnpm install --frozen-lockfile"
@@ -20,3 +23,53 @@ env = { WRANGLER_SEND_METRICS = "false" }
 
 [tasks.check]
 depends = ["typecheck", "test", "build"]
+
+[tasks."sync:lint"]
+description = "检查服务更新脚本"
+run = ["actionlint .github/workflows/sync-upstream.yml", "shellcheck scripts/sync-upstream.sh", "node --check scripts/upstream-base.mjs"]
+
+[tasks."sync:test"]
+description = "验证服务更新"
+run = "pnpm exec tsx --test test/sync-upstream.test.ts"
+
+[tasks."sync:init"]
+description = "准备服务更新"
+depends = ["deps"]
+run = "node scripts/upstream-base.mjs --initialize"
+
+[tasks."sync:upstream"]
+description = "创建服务更新请求"
+run = '''
+set -eu
+gh auth setup-git --hostname github.com
+git fetch --no-tags https://github.com/harmonia-vault/server.git refs/heads/main:refs/remotes/upstream/main
+# 合并可能更新脚本本身；本次始终执行合并前的副本。
+cp scripts/sync-upstream.sh "${RUNNER_TEMP:?}/harmonia-sync-upstream.sh"
+bash "$RUNNER_TEMP/harmonia-sync-upstream.sh" scripts/upstream-base.mjs
+'''
+
+[tasks.test-email-limits]
+description = "检查邮件双维冷却、滚动封禁、持久化、可信 IP 及 Workers 共享额度"
+run = "pnpm exec tsx --test test/email-rate-limit.test.ts test/email-rate-limit-worker.test.ts"
+
+[tasks.test-email-code]
+description = "检查八位字母数字邮件码、五次尝试、过期及 Node/Workers 账号流程"
+run = "pnpm exec tsx --test test/email-code.test.ts test/account-lifecycle.test.ts test/registration-policy.test.ts test/registration-worker.test.ts test/worker-account.test.ts"
+
+[tasks.test-email-code-boundaries]
+description = "验证八位邮件码、次数、固定注册期限及重发边界"
+run = "pnpm exec tsx --test test/email-code.test.ts"
+
+[tasks.test-email-code-retry]
+description = "验证短码验证成功后注册完成中断的原码重试与登录续办"
+run = "pnpm exec tsx --test --test-name-pattern '持久失败|写失败|移除邮箱' test/registration-policy.test.ts test/registration-worker.test.ts"
+
+[tasks.test-no-compat]
+description = "检查环境跨协议重放与旧注册数据拒绝边界"
+run = "pnpm exec tsx --test test/recovered-management.test.ts test/environment-dag.test.ts test/registration-policy.test.ts test/registration-worker.test.ts test/email-rate-limit-worker.test.ts"
+
+[tasks.test-dag-current]
+run = "pnpm exec tsx --test test/recovery-dag-http.test.ts test/environment-dag.test.ts test/grant-management-dag.test.ts test/enrollment.test.ts test/recovery-dag.test.ts"
+
+[tasks.test-dag-transport]
+run = "pnpm exec tsx --test test/notifications.test.ts test/worker-notifications.test.ts test/protocol-info.test.ts"

@@ -5,33 +5,28 @@ import type { RecoveryDAGAccount } from './recovery-dag-account.js';
 import type { RecoveryDAGRecord } from './recovery-dag-wire.js';
 import { resolutionTargetHash, validateResolutionTarget, type OperationKind, type ResolutionTarget } from './recovery-operation-resolution-wire.js';
 
-// 新分配的联合预算；老五张各128挑战表可留下最多640个既有预留。
+// 挑战和已关闭操作共同受单个账号容量限制。
 export const maxCloseableRecoveryOperations = 256;
-const maxPersistedClosures = 5 * 128;
+const maxPersistedClosures = maxCloseableRecoveryOperations;
 export interface RecoveryOperationClosure {
   version: 1; target: ResolutionTarget; targetHash: string; sequence: number; observedChallengeHash: string | null;
 }
 export interface RecoveryOperationClosures { version: 1; entries: Record<string, RecoveryOperationClosure> }
 export type RecoveryOperationAccount = RecoveryDAGAccount & { recoveryOperationClosures?: RecoveryOperationClosures };
-type DirectoryKind = RecoveryDAGRecord['kind'] | 'rotation-v1';
+type DirectoryKind = RecoveryDAGRecord['kind'];
 export interface RecoveryOperationDirectory {
-  accepted: {kind: DirectoryKind; record?: RecoveryDAGRecord; rotation?: NonNullable<Account['recoveryRotations']>[string]}[];
+  accepted: {kind: DirectoryKind; record?: RecoveryDAGRecord}[];
   challenges: {kind: DirectoryKind; value: unknown}[];
   closure: RecoveryOperationClosure | undefined;
 }
 export function recoveryOperationId(r: RecoveryDAGRecord): string {
-  return r.kind === 'transition-v1' || r.kind === 'transition-v2' ? r.record.submission.transition.operationId : r.record.submission.enrollment.operationId;
+  return r.kind === 'transition-v2' ? r.record.submission.transition.operationId : r.record.submission.enrollment.operationId;
 }
 export function recoveryOperationDirectory(a: RecoveryOperationAccount, id: string): RecoveryOperationDirectory {
-  const records: RecoveryDAGRecord[] = [
-    ...(a.recoveryAuthorityTransitions ?? []).map(record => ({kind: 'transition-v1' as const, record})),
-    ...Object.values(a.recoveredDevices ?? {}).map(record => ({kind: 'recovered-v1' as const, record})),
-    ...(a.recoveryDAGHistory ?? []),
-  ];
+  const records = a.recoveryDAGHistory ?? [];
   const accepted: RecoveryOperationDirectory['accepted'] = records.filter(r => recoveryOperationId(r) === id).map(record => ({kind: record.kind, record}));
   const challenges: RecoveryOperationDirectory['challenges'] = [];
   for (const [kind, map] of [
-    ['transition-v1', a.recoveryAuthorityChallenges], ['recovered-v1', a.recoveredDeviceChallenges],
     ['transition-v2', a.recoveryDAGChallenges], ['recovered-v2', a.recoveredDAGChallenges],
   ] as const) {
     const value = own(map as Record<string, unknown> | undefined, id);
@@ -40,9 +35,6 @@ export function recoveryOperationDirectory(a: RecoveryOperationAccount, id: stri
       challenges.push({kind, value});
     }
   }
-  const rotation = own(a.recoveryRotations, id);
-  if (rotation?.state === 'complete') accepted.push({kind: 'rotation-v1', rotation});
-  else if (rotation) challenges.push({kind: 'rotation-v1', value: rotation});
   const closure = own(a.recoveryOperationClosures?.entries, id);
   if (accepted.length > 1 || challenges.length > 1 || accepted.length && challenges.length && accepted[0]!.kind !== challenges[0]!.kind || closure && (accepted.length || challenges.length)) throw new Fault(409, 'recovery_operation_state_invalid');
   return {accepted, challenges, closure};
@@ -55,14 +47,14 @@ export function assertRecoveryOperationOpen(a: RecoveryOperationAccount, id: str
 }
 export function pendingRecoveryOperationIds(a: RecoveryOperationAccount): Set<string> {
   const ids = new Set<string>();
-  for (const map of [a.recoveryAuthorityChallenges, a.recoveredDeviceChallenges, a.recoveryDAGChallenges, a.recoveredDAGChallenges, a.recoveryRotations]) for (const id of Object.keys(map ?? {})) {
+  for (const map of [a.recoveryDAGChallenges, a.recoveredDAGChallenges]) for (const id of Object.keys(map ?? {})) {
     if (!recoveryOperationDirectory(a, id).accepted.length) ids.add(id);
   }
   return ids;
 }
 export function assertRecoveryOperationCapacity(a: RecoveryOperationAccount, id: string): void {
   const pending = pendingRecoveryOperationIds(a);
-  // 已有挑战就是预留：即使旧数据超新预算，也允许同ID换为墓碑。
+  // 已有挑战占用的预留可用于关闭同一个操作。
   if (pending.has(id)) return;
   if (Object.keys(a.recoveryOperationClosures?.entries ?? {}).length + pending.size >= maxCloseableRecoveryOperations) throw new Fault(503, 'account_capacity_reached');
 }

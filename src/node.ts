@@ -6,6 +6,7 @@ import { smtpEmail } from "./smtp.js";
 import { Fault } from "./model.js";
 import type { EmailTransport } from "./email-transport.js";
 import { nodeServer } from "./node-runtime.js";
+import { isIP } from "node:net";
 const path = process.env.HARMONIA_DATABASE ?? "/data/harmonia.sqlite";
 mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 const { store, sql } = nodeStore(path);
@@ -20,7 +21,9 @@ const service = new VaultService(store, {
   requireEmailVerification: process.env.HARMONIA_REQUIRE_EMAIL_VERIFICATION !== "false",
 }, undefined, undefined, mail);
 // 只监听 loopback；远程设备访问须通过明确的 TLS 代理边界。
-const { server, closeNotifications } = nodeServer(service);
+const trustedProxyIPs = (process.env.HARMONIA_TRUSTED_PROXY_IPS ?? "").split(",").map(ip => ip.trim()).filter(Boolean);
+if (trustedProxyIPs.some(ip => !isIP(ip))) throw new Error("trusted_proxy_ip_invalid");
+const { server, closeNotifications } = nodeServer(service, undefined, undefined, trustedProxyIPs);
 if (process.env.HARMONIA_BIND && process.env.HARMONIA_BIND !== "127.0.0.1") throw new Error("remote_plain_http_binding_disabled");
 server.listen(Number(process.env.HARMONIA_PORT ?? "8787"), "127.0.0.1");
 function stop(): void { closeNotifications(); server.close(() => { sql.close(); process.exit(0); }); }

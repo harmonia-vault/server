@@ -1,5 +1,5 @@
 import { Fault } from "./model.js";
-export interface Email { to: string; subject: string; text: string }
+export interface Email { to: string; subject: string; text: string; html?: string }
 export interface EmailTransport { send(message: Email): Promise<void> }
 export function sender(value: string): string {
   if (typeof value !== "string" || value.length > 254 || !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(value)) throw new Fault(400, "email_sender_invalid");
@@ -9,5 +9,5 @@ export function sender(value: string): string {
 export function cloudflareEmail(binding: SendEmail | undefined, from: string | undefined): EmailTransport | undefined {
   if (!binding || !from) return undefined;
   const address = sender(from);
-  return { async send(message) { await binding.send({ from: address, to: message.to, subject: message.subject, text: message.text }); } };
+  return { async send(message) { await binding.send({ from: address, to: message.to, subject: message.subject, text: message.text, ...(message.html ? { html: message.html } : {}) }); } };
 }
