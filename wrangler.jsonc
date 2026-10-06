@@ -31,12 +31,6 @@
       ]
     }
   ],
-  "d1_databases": [
-    {
-      "binding": "DIRECTORY",
-      "database_name": "harmonia-directory"
-    }
-  ],
   "vars": {
     "ALLOW_REGISTRATION": "false",
     "REQUIRE_EMAIL_VERIFICATION": "true",

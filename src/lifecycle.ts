@@ -14,8 +14,7 @@ function recoveryInitialized(account: Account): void {
   if (!account.recoverySigningPublicKey || !account.recoveryReceivingPublicKey) throw new Fault(409, "recovery_uninitialized");
   validateRecoveryState(account);
 }
-function sessionAdd(account: Account, value: Session, now: number): void {
-  account.sessions = account.sessions.filter(s => s.expiresAt > now);
+function sessionAdd(account: Account, value: Session): void {
   if (account.sessions.length >= 64) account.sessions.shift();
   account.sessions.push(value);
 }
@@ -25,7 +24,7 @@ export class LifecycleService {
     identifier(accountId); identifier(deviceId); generation(accountGeneration);
     return this.store.transaction(accountId, account => {
       const now = this.clock(); sameAccount(account, accountGeneration); granted(account, deviceId, now);
-      account.bootChallenges = (account.bootChallenges ?? []).filter(c => c.expiresAt > now);
+      account.bootChallenges ??= [];
       if (account.bootChallenges.length >= 32) throw new Fault(429, "challenge_capacity_reached");
       const d = account.devices[deviceId]!;
       const c = { id: crypto.randomUUID(), deviceId, generation: account.generation, signingPublicKey: d.signingPublicKey,
@@ -45,7 +44,7 @@ export class LifecycleService {
       verify(d.signingPublicKey, canonical(bootPayload(account.id, c)), signature);
       account.bootChallenges = account.bootChallenges!.filter(other => other.id !== c.id);
       const expiresAt = now + 3600;
-      sessionAdd(account, { tokenHash: hash, generation: account.generation, expiresAt, kind: "login", deviceId }, now);
+      sessionAdd(account, { tokenHash: hash, generation: account.generation, expiresAt, kind: "login", deviceId });
       return { token, expiresAt };
     });
   }
@@ -53,7 +52,7 @@ export class LifecycleService {
     identifier(accountId); generation(accountGeneration);
     return this.store.transaction(accountId, account => {
       const now = this.clock(); sameAccount(account, accountGeneration); recoveryInitialized(account);
-      account.recoveryChallenges = (account.recoveryChallenges ?? []).filter(c => c.expiresAt > now);
+      account.recoveryChallenges ??= [];
       if (account.recoveryChallenges.length >= 16) throw new Fault(429, "challenge_capacity_reached");
       const c = { id: crypto.randomUUID(), generation: account.generation, recoveryGeneration: account.recoveryGeneration,
         signingPublicKey: account.recoverySigningPublicKey!, nonce: randomToken(), expiresAt: now + ttl };
@@ -72,7 +71,7 @@ export class LifecycleService {
       account.recoveryChallenges = account.recoveryChallenges!.filter(other => other.id !== c.id);
       const expiresAt = now + 900;
       sessionAdd(account, { id: c.id, tokenHash: hash, generation: account.generation, recoveryGeneration: account.recoveryGeneration,
-        expiresAt, kind: "recovery", rotationRequired: true }, now);
+        expiresAt, kind: "recovery", rotationRequired: true });
       return { token, expiresAt, rotationRequired: true };
     });
   }

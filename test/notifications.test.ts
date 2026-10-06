@@ -15,8 +15,8 @@ import { Fault, grantKey } from "../src/model.js";
 import { VaultService, tokenHash } from "../src/service.js";
 import { auth, fixtureAccount, grant, mutation, now, seed, signGrant, tokenFor, seeds } from "./fixtures.js";
 const id = "synthetic-account", denies = (code: string) => (e: unknown) => e instanceof Fault && e.code === code;
-async function context(run: (c: ReturnType<typeof nodeStore>, vault: VaultService) => Promise<void>): Promise<void> {
- const dir = mkdtempSync(join(tmpdir(), "harmonia-notifications-")), c = nodeStore(join(dir,"vault.sqlite"));
+async function context(run: (c: ReturnType<typeof nodeStore>, vault: VaultService) => Promise<void>, clock: () => number = () => now): Promise<void> {
+ const dir = mkdtempSync(join(tmpdir(), "harmonia-notifications-")), c = nodeStore(join(dir,"vault.sqlite"), clock);
  try { await run(c, await seed(c.store)); } finally { c.sql.close(); rmSync(dir,{recursive:true,force:true}); }
 }
 test("通知票据仅限当前受信持钥会话与可读授权，哈希持久化且不改变权威序号", async()=>context(async({store},vault)=>{
@@ -104,10 +104,12 @@ test("真实Node TCP使用环境1MB专用限制，双大密文>100k可轮换，�
 
 }));
 
-test("待用票据有界且到期清理；发票后撤销/授权到期不得完成握手",async()=>context(async({store})=>{
- let clock=now;const n=new NotificationAuthority(store,()=>clock);
+test("待用票据有界且到期清理；发票后撤销/授权到期不得完成握手",async()=>{
+ let clock=now;await context(async({store})=>{
+ const n=new NotificationAuthority(store,()=>clock);
  for(let i=0;i<4;i++)await n.issue(id,auth("reader"));await assert.rejects(n.issue(id,auth("reader")),denies("notification_capacity_reached"));
  clock=now+31;assert.equal((await n.issue(id,auth("reader"))).expiresAt,clock+30);assert.equal(store.read(id)!.notificationTickets!.length,1);
  const writer=await n.issue(id,auth());store.transaction(id,a=>{a.devices.writer!.revoked=true;});await assert.rejects(n.consume(id,{...auth(),token:writer.ticket}),denies("device_untrusted"));
  const reader=await n.issue(id,auth("reader"));store.transaction(id,a=>{a.grants[grantKey("dev","reader")]=signGrant(grant("reader",{expiresAt:String(clock)}));});await assert.rejects(n.consume(id,{...auth("reader"),token:reader.ticket}),denies("environment_forbidden"));
-}));
+ },()=>clock);
+});

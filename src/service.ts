@@ -74,7 +74,6 @@ export class VaultService {
       sameAccount(account, snapshot.generation);
       if (!registrationComplete(account)) throw new Fault(401, "unauthorized");
       if (account.passwordVerifier !== snapshot.passwordVerifier || (registrationVerificationRequired(account) && !account.verified)) throw new Fault(401, "unauthorized");
-      account.sessions = account.sessions.filter(s => s.expiresAt > now);
       if (account.sessions.length >= 64) account.sessions.shift();
       account.sessions.push({ tokenHash: hash, generation: account.generation, expiresAt, kind: "login" });
     });
@@ -85,7 +84,6 @@ export class VaultService {
     const hash = await tokenHash(auth.token);
     return this.store.transaction(accountId, account => {
       const now = this.clock(); sameAccount(account, auth.accountGeneration); session(account, hash, now); device(account, auth.deviceId);
-      account.deviceChallenges = account.deviceChallenges.filter(c => c.expiresAt > now);
       if (account.deviceChallenges.length >= 32) throw new Fault(429, "challenge_capacity_reached");
       const c = { id: crypto.randomUUID(), deviceId: auth.deviceId, sessionHash: hash, nonce: randomToken(), expiresAt: now + 120, generation: account.generation };
       account.deviceChallenges.push(c);
@@ -103,7 +101,6 @@ export class VaultService {
       const message = new TextEncoder().encode(JSON.stringify(["harmonia/device-session/v1", account.id, account.generation, c.deviceId, c.sessionHash, c.id, c.nonce, String(c.expiresAt)]));
       verify(account.devices[auth.deviceId]!.signingPublicKey, message, signature);
       account.deviceChallenges = account.deviceChallenges.filter(other => other.id !== c.id);
-      account.sessions = account.sessions.filter(s => s.expiresAt > now);
       if (account.sessions.length >= 64) account.sessions.shift();
       const expiresAt = Math.min(now + sessionTTL, login.expiresAt);
       account.sessions.push({ tokenHash: scopedHash, generation: account.generation, expiresAt, kind: "login", deviceId: auth.deviceId });

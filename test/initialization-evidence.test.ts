@@ -30,7 +30,7 @@ const denies = (code: string) => (e: unknown): boolean => e instanceof Fault && 
 interface Harness { store: ReturnType<typeof nodeStore>["store"]; service: EnrollmentService; vault: VaultService; login: LoginAuth; path: string; advance: (n: number) => void }
 async function withEmpty(run: (h: Harness) => Promise<void>, verified = true): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "harmonia-enrollment-")), path = join(dir, "synthetic.sqlite");
-  const { store, sql } = nodeStore(path); let clock = now;
+  let clock = now; const { store, sql } = nodeStore(path, () => clock);
   try {
     const a = await fixtureAccount(accountId); clearVault(a); a.devices = {}; a.environments = {}; a.grants = {}; a.events = []; a.sessions = [];
     a.recoverySigningPublicKey = null; a.recoveryReceivingPublicKey = null; a.verified = verified; store.create(a);

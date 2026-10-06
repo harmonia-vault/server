@@ -42,7 +42,7 @@ export class NotificationAuthority {
     const ticket = randomToken(), ticketHash = await tokenHash(ticket), now = this.clock();
     return this.store.transaction(accountId, a => {
       const current = this.current(a, identity), expiresAt = Math.min(now + 30, current.expiresAt);
-      a.notificationTickets = (a.notificationTickets ?? []).filter(t => t.expiresAt > now);
+      a.notificationTickets ??= [];
       if (a.notificationTickets.length >= 32 || a.notificationTickets.filter(t => t.deviceId === auth.deviceId).length >= 4) throw new Fault(429, "notification_capacity_reached");
       a.notificationTickets.push({ ticketHash, sessionHash: identity.sessionHash, accountGeneration: a.generation, deviceId: auth.deviceId, expiresAt });
       return { ticket, expiresAt, sequence: a.sequence };

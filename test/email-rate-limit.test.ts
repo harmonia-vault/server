@@ -17,7 +17,7 @@ import { mailCode } from "./email-proof.js";
 const credential = "ab".repeat(32), ipA = "192.0.2.1", ipB = "192.0.2.2";
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "harmonia-email-limits-")), path = join(dir, "db.sqlite");
-  let db = nodeStore(path), now = 1800000000, failing = false;
+  let now = 1800000000, db = nodeStore(path, () => now), failing = false;
   const mails: Email[] = [];
   const passwords = { hash: async (value: string) => `synthetic:${value}`, verify: async () => true };
   const mail = { send: async (message: Email) => { if (failing) throw new Error("synthetic mail failure"); mails.push(message); } };
@@ -29,7 +29,7 @@ function fixture() {
     register: (email: string, ip = ipA) => service().register(email, credential, undefined, ip),
     advance: (seconds: number) => { now += seconds; },
     failMail: (value: boolean) => { failing = value; },
-    reopen: () => { db.sql.close(); db = nodeStore(path); },
+    reopen: () => { db.sql.close(); db = nodeStore(path, () => now); },
     close: () => { db.sql.close(); rmSync(dir, { recursive: true, force: true }); },
   };
 }

@@ -20,6 +20,7 @@ export interface RecoveryDAGAccount extends EnrollmentAccount {
   recoveredDAGChallenges?: Record<string, import('./recovery-dag-service.js').DAGRecoveredChallenge>;
   dagDeviceEnrollments?: Record<string,EnrollmentApprovalV5>;
   dagPairingSessions?: Record<string,import('./dag-enrollment.js').DAGPairingRecord>;
+  usedPairingIds?: string[];
 }
 function fail(code='recovery_dag_invalid'):never {throw new Fault(403,code);}
 const b64=(b:Uint8Array):string=>Buffer.from(b).toString('base64url');

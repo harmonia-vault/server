@@ -15,7 +15,7 @@ Harmonia（和弦）是一个自托管的环境变量同步工具：在手机上
 
 1. 在 Cloudflare 中启用 [Email Service](https://developers.cloudflare.com/email-service/) 并验证发信域名，用于发送注册和账号重置验证码。
 2. [Fork 本仓库](https://github.com/harmonia-vault/server/fork)，按[配置](#配置)填写发件地址。
-3. 在 Cloudflare 的 **My Profile → API Tokens** 中，使用 **Edit Cloudflare Workers** 模板创建令牌，并添加 **Account → D1 → Edit** 权限。
+3. 在 Cloudflare 的 **My Profile → API Tokens** 中，使用 **Edit Cloudflare Workers** 模板创建令牌。
 4. 在 **Workers & Pages → Create application** 中连接自己的 Fork，选择 `main` 分支和刚创建的令牌，Worker 名称填 `harmonia-server`。
 5. 完成部署，记录 Worker 的 HTTPS 地址。
 

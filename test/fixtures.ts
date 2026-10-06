@@ -42,7 +42,7 @@ export function mutation(deviceId = "writer", overrides: Partial<Mutation> = {})
 export const auth = (deviceId = "writer"): Auth => ({ token: tokenFor(deviceId), deviceId, accountGeneration: "1" });
 export async function fixtureAccount(id = "synthetic-account", mail = email): Promise<RecoveryDAGAccount> {
   const passwordVerifier = await hashCredential(clientCredential);
-  const a: RecoveryDAGAccount = { schema: 2, id, email: mail, generation: "1", verified: true, passwordVerifier, sequence: 0,
+  const a: RecoveryDAGAccount = { schema: 3, id, email: mail, generation: "1", verified: true, passwordVerifier, sequence: 0,
     verificationRequiredAtRegistration: false, registrationAdmission: { id: `registration-${id}`, mode: "open", state: "complete", expiresAt: now + 900, readyAt: now },
     devices: {}, environments: { dev: { id: "dev", keyVersion: "1", recoveryEnvelope: Buffer.alloc(80, 9).toString("base64url"), recoveryGeneration: "1", recoveryKeyVersion: "1" } }, grants: {},
     sessions: [], deviceChallenges: [], events: [], idempotency: {}, grantHistory: [],

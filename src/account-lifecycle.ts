@@ -16,7 +16,7 @@ export interface VerificationInput { accountGeneration: string; code: string }
 export interface ProofInput { accountGeneration: string; challengeId: string; token: string }
 export interface ResetInput extends ProofInput { newCredential: string; confirmation: "DELETE_OLD_VAULT" }
 export function emptyAccount(id: string, email: string, accountGeneration: string, passwordVerifier: string, registration: Pick<Account, "verificationRequiredAtRegistration" | "registrationAdmission">, verified = false): Account {
-  return { schema: 2, id, email, generation: accountGeneration, verified, passwordVerifier, verificationRequiredAtRegistration: registration.verificationRequiredAtRegistration, registrationAdmission: structuredClone(registration.registrationAdmission), sequence: 0, devices: {}, environments: {}, grants: {},
+  return { schema: 3, id, email, generation: accountGeneration, verified, passwordVerifier, verificationRequiredAtRegistration: registration.verificationRequiredAtRegistration, registrationAdmission: structuredClone(registration.registrationAdmission), sequence: 0, devices: {}, environments: {}, grants: {},
     sessions: [], deviceChallenges: [], events: [], idempotency: {}, recoveryGeneration: "1", recoverySigningPublicKey: null, recoveryReceivingPublicKey: null };
 }
 const accepted = (): { accepted: true } => ({ accepted: true });
@@ -28,29 +28,18 @@ export class AccountLifecycle {
     const state = await this.store.registrationAuthority.info();
     if (!open && state.firstCompleted) throw new Fault(403, "registration_disabled");
     if (configuredVerification) this.requireMail();
-    const address = normalizeEmail(email), oldId = this.store.byEmail(address), old = oldId ? this.store.read(oldId) : undefined;
-    if (old && (registrationComplete(old) || old.registrationAdmission!.state === "proof-ready" || old.registrationAdmission!.expiresAt > this.clock() || Object.keys(old.devices).length || Object.keys(old.environments).length || old.sequence)) throw new Fault(409, "account_exists");
-    const required = old ? registrationVerificationRequired(old) : configuredVerification;
-    if (required) this.requireMail();
-    const id = oldId ?? reservedAccountId ?? crypto.randomUUID(); identifier(id);
+    const address = normalizeEmail(email);
+    if (this.store.byEmail(address)) throw new Fault(409, "account_exists");
+    const required = configuredVerification;
+    const id = reservedAccountId ?? crypto.randomUUID(); identifier(id);
     credential(value);
     if (required) await reserveEmailSend(this.store.emailRateLimit, address, clientIP, this.clock());
     const passwordVerifier = await this.passwords.hash(value), now = this.clock();
-    const build = (generation: string): Account => {
-      return emptyAccount(id, address, generation, passwordVerifier, {
-        verificationRequiredAtRegistration: required,
-        registrationAdmission: { id: crypto.randomUUID(), mode: open ? "open" : "initial", state: required ? "pending" : "proof-ready", expiresAt: now + 900, ...(required ? {} : { readyAt: now }) },
-      });
-    };
-    let accountGeneration: string;
-    if (old) {
-      accountGeneration = this.store.transaction(id, a => {
-        if (a.generation !== old.generation || a.passwordVerifier !== old.passwordVerifier || registrationComplete(a) || a.registrationAdmission?.state !== "pending" || a.registrationAdmission.expiresAt > now || Object.keys(a.devices).length || Object.keys(a.environments).length || a.sequence) throw new Fault(409, "account_changed");
-        if (BigInt(a.generation) >= 18446744073709551615n) throw new Fault(503, "generation_exhausted");
-        const generation = String(BigInt(a.generation) + 1n), replacement = build(generation);
-        for (const key of Object.keys(a)) delete (a as unknown as Record<string, unknown>)[key]; Object.assign(a, replacement); return generation;
-      });
-    } else { accountGeneration = "1"; this.store.create(build(accountGeneration)); }
+    const accountGeneration = "1";
+    this.store.create(emptyAccount(id, address, accountGeneration, passwordVerifier, {
+      verificationRequiredAtRegistration: required,
+      registrationAdmission: { id: crypto.randomUUID(), mode: open ? "open" : "initial", state: required ? "pending" : "proof-ready", expiresAt: now + 900, ...(required ? {} : { readyAt: now }) },
+    }));
     if (required) await this.sendProof(address, "verification"); else await this.resumeRegistration(id);
     return { accountId: id, accountGeneration, verificationRequired: required };
   }
@@ -88,8 +77,7 @@ export class AccountLifecycle {
       const deadline = purpose === "verification" && admission?.state === "pending"
         ? Math.min(now + emailCodeLifetime, admission.expiresAt) : now + emailCodeLifetime;
       if (deadline <= now) throw new Fault(401, "registration_expired");
-      account.emailProofs = (account.emailProofs ?? []).filter(p => p.expiresAt > now);
-      account.emailProofs = account.emailProofs.filter(p => p.purpose !== purpose);
+      account.emailProofs = (account.emailProofs ?? []).filter(p => p.purpose !== purpose);
       account.emailProofs.push({ id, purpose, generation: account.generation, tokenHash: hash, verifierHash, expiresAt: deadline,
         code: { salt, failedAttempts: 0, expiresAt: deadline } });
       return deadline;
@@ -112,7 +100,7 @@ export class AccountLifecycle {
     const normalized = normalizeEmailCode(code);
     if (!normalized) throw new Fault(400, "email_code_invalid");
     const snapshot = this.store.read(accountId);
-    if (!snapshot) throw new Fault(401, "email_code_invalid");
+    if (!snapshot) throw new Fault(401, purpose === 'verification' ? 'registration_expired' : 'email_code_invalid');
     if (expectedGeneration !== undefined) { generation(expectedGeneration); sameAccount(snapshot, expectedGeneration); }
     const source = snapshot.emailProofs?.find(p => p.purpose === purpose) ?? (purpose === "reset" ? snapshot.resetReceipt : undefined);
     if (!source?.code) throw new Fault(401, "email_code_invalid");

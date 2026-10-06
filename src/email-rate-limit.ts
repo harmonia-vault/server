@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { Fault } from "./model.js";
 import type { Sql } from "./store.js";
+import { TemporaryStore } from './temporary-store.js';
 
 export const emailSendCooldown = 30;
 export interface EmailLimitDecision { retryAfterSeconds: number; blocked: boolean }
@@ -46,23 +47,16 @@ export async function reserveEmailSend(limits: EmailRateLimit, email: string, ip
 
 interface LimitState { nextAt: number; blockedUntil: number; history: number[] }
 export class SqlEmailRateLimit implements EmailRateLimit {
-  constructor(private readonly sql: Sql) {
-    sql.execute("CREATE TABLE IF NOT EXISTS email_send_limits (key TEXT PRIMARY KEY, next_at INTEGER NOT NULL, blocked_until INTEGER NOT NULL, history TEXT NOT NULL, expires_at INTEGER NOT NULL)");
-    sql.execute("CREATE INDEX IF NOT EXISTS email_send_limits_expiry ON email_send_limits(expires_at)");
-  }
-  private read(key: string): LimitState {
-    const row = this.sql.rows("SELECT next_at,blocked_until,history FROM email_send_limits WHERE key=?", [key])[0];
-    return row ? { nextAt: Number(row.next_at), blockedUntil: Number(row.blocked_until), history: JSON.parse(String(row.history)) as number[] } : { nextAt: 0, blockedUntil: 0, history: [] };
+  constructor(private readonly sql: Sql, private readonly temporary: TemporaryStore) {}
+  private read(key: string, now: number): LimitState {
+    return this.temporary.get<LimitState>('email-limit', '', key, now) ?? { nextAt: 0, blockedUntil: 0, history: [] };
   }
   private write(key: string, state: LimitState, expiresAt: number): void {
-    this.sql.execute("INSERT INTO email_send_limits(key,next_at,blocked_until,history,expires_at) VALUES(?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET next_at=excluded.next_at,blocked_until=excluded.blocked_until,history=excluded.history,expires_at=excluded.expires_at",
-      [key, state.nextAt, state.blockedUntil, JSON.stringify(state.history), expiresAt]);
+    this.temporary.put({ namespace: 'email-limit', owner: '', key, value: state, expiresAt });
   }
   async reserve(emailKey: string, ipKey: string | undefined, now: number): Promise<EmailLimitDecision> {
-    return this.sql.transaction(() => {
-      // 有界清理；冷却、滚动窗口和封禁均先持久提交，再调用邮件服务。
-      this.sql.execute("DELETE FROM email_send_limits WHERE key IN (SELECT key FROM email_send_limits WHERE expires_at<=? LIMIT 128)", [now]);
-      const email = this.read(emailKey), ip = ipKey ? this.read(ipKey) : undefined;
+    const decision = this.sql.transaction(() => {
+      const email = this.read(emailKey, now), ip = ipKey ? this.read(ipKey, now) : undefined;
       const wait = Math.max(email.nextAt, ip?.nextAt ?? 0, ip?.blockedUntil ?? 0) - now;
       if (wait > 0) return { retryAfterSeconds: Math.ceil(wait), blocked: (ip?.blockedUntil ?? 0) > now };
       if (ip && ipKey) {
@@ -83,5 +77,7 @@ export class SqlEmailRateLimit implements EmailRateLimit {
       this.write(emailKey, { nextAt: now + emailSendCooldown, blockedUntil: 0, history: [] }, now + emailSendCooldown);
       return { retryAfterSeconds: 0, blocked: false };
     });
+    this.temporary.changed();
+    return decision;
   }
 }

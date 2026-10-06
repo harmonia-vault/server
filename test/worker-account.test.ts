@@ -8,7 +8,7 @@ import { build } from "esbuild";
 import { Miniflare } from "miniflare";
 import type { Email } from "../src/email-transport.js";
 import { clientCredential } from "./fixtures.js";
-test("actual workerd registration uses D1 routing reservation and one account DO for verify/reset/CAS generation", { timeout: 180000 }, async () => {
+test("actual workerd registration uses opaque stable routing and one account DO for verify/reset/CAS generation", { timeout: 180000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "harmonia-worker-account-")); let mf: Miniflare | undefined;
   try {
     const built = await build({ entryPoints: ["test/worker-harness.ts"], absWorkingDir: process.cwd(), bundle: true, write: false, format: "esm", platform: "browser", target: "es2023", external: ["cloudflare:workers", "node:*"], define: { Buffer: "Buffer" }, banner: { js: 'import { Buffer } from "node:buffer";' } });
@@ -33,11 +33,8 @@ test("actual workerd registration uses D1 routing reservation and one account DO
     const rejected = await mf.dispatchFetch(`https://selfhost.example.invalid${base}/pull?after=0&capability=issuer-recovery-dag-v1`, { headers: {"Harmonia-Protocol-Major":"2", authorization: `Bearer ${oldToken}`, "x-harmonia-device-id": "old-device", "x-harmonia-account-generation": "1" } }); assert.equal(rejected.status, 401); assert.equal((await rejected.json() as { error: string }).error, "generation_stale");
     assert.equal((await post("/v1/login", { email, credential: clientCredential })).status, 401);
     assert.equal((await post("/v1/login", { email, credential: request.newCredential })).status, 200);
-    const directory = await mf.getD1Database("DIRECTORY"), columns = await directory.prepare("PRAGMA table_info(account_directory)").all<{ name: string }>();
-    assert.deepEqual(columns.results.map(c => c.name), ["email", "account_id"]);
-    const mapping = await directory.prepare("SELECT account_id FROM account_directory WHERE email=?").bind(email).first<{ account_id: string }>(); assert.equal(mapping!.account_id, registration.accountId);
-    const orphanId = crypto.randomUUID(); await directory.prepare("INSERT INTO account_directory(email,account_id) VALUES(?,?)").bind("reserved@example.invalid", orphanId).run();
-    const filled = await post("/v1/register", { email: "reserved@example.invalid", credential: clientCredential }); assert.equal(filled.status, 200); assert.equal((await filled.json() as { accountId: string }).accountId, orphanId);
+    const directory = await mf.getD1Database("DIRECTORY");
+    assert.equal((await directory.prepare("SELECT name FROM sqlite_master WHERE name='account_directory'").all()).results.length, 0);
     assert.equal((await post("/v1/register", { email, credential: clientCredential })).status, 409);
   } finally { await mf?.dispose(); rmSync(dir, { recursive: true, force: true }); }
 });

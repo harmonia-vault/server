@@ -39,7 +39,13 @@ export function nodeServer(service: VaultService, extra?: (request: Request) => 
     try {
       const chunks: Uint8Array[] = []; let size = 0;
       const pathname = new URL(incoming.url ?? "/", "http://127.0.0.1").pathname, limit = bodyLimit(incoming.method ?? "GET", pathname);
-      for await (const chunk of incoming.iterator({ destroyOnReturn: false })) { size += Buffer.byteLength(chunk); if (size > limit) { incoming.resume(); throw new Fault(413, "body_too_large"); } chunks.push(Buffer.from(chunk)); }
+      for await (const chunk of incoming.iterator({ destroyOnReturn: false })) {
+        size += Buffer.byteLength(chunk);
+        if (size > limit) break;
+        chunks.push(Buffer.from(chunk));
+      }
+      // 正常退出读取后再报告超限，避免 iterator 的异常退出销毁连接。
+      if (size > limit) { incoming.resume(); throw new Fault(413, 'body_too_large'); }
       const request = incomingRequest(incoming, ["GET", "HEAD"].includes(incoming.method ?? "GET") ? undefined : Buffer.concat(chunks));
       const response = await extra?.(request) ?? await route(request, service, incomingClientIP(incoming, trustedProxyIPs));
       outgoing.writeHead(response.status, Object.fromEntries(response.headers)); outgoing.end(Buffer.from(await response.arrayBuffer()));
@@ -49,9 +55,7 @@ export function nodeServer(service: VaultService, extra?: (request: Request) => 
     socket.on("error", () => {});
     void (async () => {
       const request = incomingRequest(incoming); requestProtocolMajor(request); const accountId = notificationPath(request);
-      if (peers.size >= 256) throw new Fault(429, "notification_capacity_reached");
       const credentials = requestAuth(request);
-      if (Array.from(peers.values()).filter(p => p.accountId === accountId && p.deviceId === credentials.deviceId).length >= 4) throw new Fault(429, "notification_capacity_reached");
       const state = await authority.consume(accountId, credentials);
       if (socket.destroyed) return;
       if (peers.size >= 256 || Array.from(peers.values()).filter(p => p.accountId === accountId && p.deviceId === credentials.deviceId).length >= 4) throw new Fault(429, "notification_capacity_reached");

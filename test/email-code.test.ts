@@ -23,7 +23,7 @@ async function fixture(purpose: EmailProof['purpose'], run: (h: {
 }) => Promise<void>) {
   const dir = mkdtempSync(join(tmpdir(), 'harmonia-email-code-'));
   const file = join(dir, 'account.sqlite');
-  let db = nodeStore(file), now = 1800000000;
+  let now = 1800000000, db = nodeStore(file, () => now);
   const mails: Email[] = [], mail = { send: async (message: Email) => { mails.push(message); } };
   const life = new AccountLifecycle(db.store, wasmPassword, () => now, mail);
   const vault = new VaultService(db.store, { allowRegistration: true, requireEmailVerification: true }, () => now, wasmPassword, mail);
@@ -31,7 +31,7 @@ async function fixture(purpose: EmailProof['purpose'], run: (h: {
     const registration = await life.register(email, clientCredential, { allowRegistration: true, requireEmailVerification: purpose === 'verification' });
     if (purpose === 'reset') await life.requestProof(email, 'reset');
     await run({ life, vault, store: db.store, code: mailCode(mails.at(-1)!), id: registration.accountId, mails, advance: seconds => { now += seconds; },
-      reopen: () => { db.sql.close(); db = nodeStore(file); return new AccountLifecycle(db.store, wasmPassword, () => now, mail); } });
+      reopen: () => { db.sql.close(); db = nodeStore(file, () => now); return new AccountLifecycle(db.store, wasmPassword, () => now, mail); } });
   } finally { db.sql.close(); rmSync(dir, { recursive: true, force: true }); }
 }
 function checkCode(life: AccountLifecycle, id: string, code: string, purpose: EmailProof['purpose']): Promise<unknown> {
@@ -57,7 +57,7 @@ for (const purpose of ['verification', 'reset'] as const) {
   for (const elapsed of [899, 900]) test(`${purpose}: validity at ${elapsed} seconds`, async () => fixture(purpose, async h => {
     h.advance(elapsed);
     if (elapsed === 899) await checkCode(h.life, h.id, h.code, purpose);
-    else await assert.rejects(checkCode(h.life, h.id, h.code, purpose), denies(purpose === 'verification' ? 'registration_expired' : 'email_code_expired'));
+    else await assert.rejects(checkCode(h.life, h.id, h.code, purpose), denies(purpose === 'verification' ? 'registration_expired' : 'email_code_invalid'));
   }));
   test(`${purpose}: resending replaces the challenge and resets the budget`, async () => fixture(purpose, async h => {
     const original = h.store.read(h.id)!.emailProofs![0]!;
@@ -119,17 +119,17 @@ test('registration resend keeps the original deadline and expiry allows a fresh 
   assert.match(h.mails.at(-1)!.text, /^1 分钟内有效/m);
   h.advance(30);
   const sent = h.mails.length;
-  await assert.rejects(h.life.requestProof(email, 'verification'), denies('registration_expired'));
+  await h.life.requestProof(email, 'verification');
   await assert.rejects(checkCode(h.life, h.id, resent, 'verification'), denies('registration_expired'));
   assert.equal(h.mails.length, sent);
   h.advance(30);
   const replacement = await h.life.register(email, clientCredential, { allowRegistration: true, requireEmailVerification: true });
-  assert.equal(replacement.accountId, h.id);
-  assert.equal(replacement.accountGeneration, '2');
-  assert.equal(h.store.read(h.id)!.registrationAdmission!.expiresAt, deadline + 930);
+  assert.notEqual(replacement.accountId, h.id);
+  assert.equal(replacement.accountGeneration, '1');
+  assert.equal(h.store.read(replacement.accountId)!.registrationAdmission!.expiresAt, deadline + 930);
   await assert.rejects(h.life.verifyEmail(h.id, { accountGeneration: '1', code: resent }));
-  await h.life.verifyEmail(h.id, { accountGeneration: '2', code: mailCode(h.mails.at(-1)!).toLowerCase() });
-  assert.equal(h.store.read(h.id)!.registrationAdmission!.state, 'complete');
+  await h.life.verifyEmail(replacement.accountId, { accountGeneration: '1', code: mailCode(h.mails.at(-1)!).toLowerCase() });
+  assert.equal(h.store.read(replacement.accountId)!.registrationAdmission!.state, 'complete');
 }));
 
 test('resending immediately before registration expiry leaves only the remaining lifetime', async () => fixture('verification', async h => {

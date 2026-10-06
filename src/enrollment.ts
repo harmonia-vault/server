@@ -51,7 +51,6 @@ export class EnrollmentService {
         return rootView(accountId, prior);
       }
       empty(a); a.vaultInitializations ??= {};
-      for (const [key, old] of Object.entries(a.vaultInitializations)) if (!old.complete && old.expiresAt <= now) delete a.vaultInitializations[key];
       if (Object.keys(a.vaultInitializations).length >= 16) throw new Fault(429, "challenge_capacity_reached");
       const r: InitializationRecord = { id: crypto.randomUUID(), sessionHash: hash, accountGeneration: a.generation, nonce: randomToken(), expiresAt: now + 120,
         proposal: structuredClone(proposal), proposalHash };

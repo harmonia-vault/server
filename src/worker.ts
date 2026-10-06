@@ -4,13 +4,15 @@ import { DurableObject } from "cloudflare:workers";
 import { SqlStore, type Sql } from "./store.js";
 import { VaultService, normalizeEmail } from "./service.js";
 import { bodyLimit, faultResponse, requestAuth, route } from "./http.js";
-import { canonicalClientIP, reserveEmailSend, SqlEmailRateLimit, type EmailRateLimit, type EmailLimitDecision } from "./email-rate-limit.js";
+import { canonicalClientIP, SqlEmailRateLimit, type EmailRateLimit, type EmailLimitDecision } from "./email-rate-limit.js";
 import { NotificationAuthority, notificationPath, type NotificationState } from "./notifications.js";
 import { cloudflareEmail, type EmailTransport } from "./email-transport.js";
 import { normalizeEmailCode } from "./email-code.js";
 import { Fault } from "./model.js";
 import { workerPassword } from "./worker-password.js";
-import { credential, DUMMY_VERIFIER } from "./password.js";
+import { credential } from "./password.js";
+import { createHmac, randomBytes } from 'node:crypto';
+import { TemporaryStore } from './temporary-store.js';
 type Env = Omit<Cloudflare.Env, "EMAIL" | "INSTANCES"> & { EMAIL?: SendEmail; INSTANCES?: DurableObjectNamespace<InstanceRegistry> };
 class DurableSql implements Sql {
   constructor(private readonly storage: DurableObjectStorage) {}
@@ -22,22 +24,50 @@ class DurableSql implements Sql {
 export class InstanceRegistry extends DurableObject<Env> {
   private readonly authority: SqlRegistrationAuthority;
   private readonly emailLimits: SqlEmailRateLimit;
+  private readonly temporary: TemporaryStore;
+  private readonly routingKey: string | undefined;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const sql = new DurableSql(ctx.storage);
-    this.authority = new SqlRegistrationAuthority(sql);
-    this.emailLimits = new SqlEmailRateLimit(sql);
+    const state = sql.transaction(() => {
+      const existing = sql.rows("SELECT name FROM sqlite_master WHERE type='table' AND name='instance_registration'").length > 0;
+      const authority = new SqlRegistrationAuthority(sql), temporary = new TemporaryStore(sql);
+      // 实例创建与路由密钥原子提交；旧实例不能被解释成新的账号空间。
+      sql.execute('CREATE TABLE IF NOT EXISTS routing_key (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)');
+      if (!existing) sql.execute('INSERT INTO routing_key(id,value) VALUES(1,?)', [Buffer.from(randomBytes(32)).toString('hex')]);
+      const routingKey = sql.rows('SELECT value FROM routing_key WHERE id=1')[0]?.value as string | undefined;
+      return { authority, temporary, routingKey };
+    });
+    this.authority = state.authority;
+    this.temporary = state.temporary;
+    this.routingKey = state.routingKey;
+    this.emailLimits = new SqlEmailRateLimit(sql, this.temporary);
+    this.temporary.onChange(() => this.ctx.waitUntil(this.scheduleExpiry()));
+    this.ctx.blockConcurrencyWhile(async () => {
+      if (await this.ctx.storage.getAlarm() === null) { this.temporary.sweep(); await this.scheduleExpiry(); }
+    });
   }
+  async supportsFormat(): Promise<boolean> { return this.routingKey !== undefined; }
+  private requireFormat(): string { if (!this.routingKey) throw new Fault(409, 'account_format_unsupported'); return this.routingKey; }
+  async resolveAccount(email: string): Promise<string> { return createHmac('sha256', Buffer.from(this.requireFormat(), 'hex')).update(normalizeEmail(email)).digest('hex'); }
+  private async scheduleExpiry(): Promise<void> {
+    const deadline = this.temporary.nextExpiry();
+    if (deadline === undefined) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(Math.max(Date.now() + 1, deadline * 1000));
+  }
+  async alarm(): Promise<void> { this.temporary.sweep(); await this.scheduleExpiry(); }
   reserveEmail(emailKey: string, ipKey: string | undefined, now: number): Promise<EmailLimitDecision> {
+    this.requireFormat();
     return this.emailLimits.reserve(emailKey, ipKey, now);
   }
-  async info(): Promise<RegistrationState> { return this.authority.info(); }
-  async complete(accountId: string, admissionId: string, mode: RegistrationAdmission["mode"]): Promise<{ accepted: boolean }> { return this.authority.complete(accountId, admissionId, mode); }
+  async info(): Promise<RegistrationState> { this.requireFormat(); return this.authority.info(); }
+  async complete(accountId: string, admissionId: string, mode: RegistrationAdmission["mode"]): Promise<{ accepted: boolean }> { this.requireFormat(); return this.authority.complete(accountId, admissionId, mode); }
 }
-function registrationAuthority(env: Env): RegistrationAuthority {
+function instanceRegistry(env: Env): DurableObjectStub<InstanceRegistry> {
   if (!env.INSTANCES) throw new Fault(503, "instance_unavailable");
   return env.INSTANCES.getByName("harmonia-instance-v1");
 }
+function registrationAuthority(env: Env): RegistrationAuthority { return instanceRegistry(env); }
 function emailRateLimit(env: Env): EmailRateLimit {
   if (!env.INSTANCES) throw new Fault(503, "instance_unavailable");
   const registry = env.INSTANCES.getByName("harmonia-instance-v1");
@@ -46,15 +76,20 @@ function emailRateLimit(env: Env): EmailRateLimit {
 export class AccountVault extends DurableObject<Env> {
   private readonly service: VaultService;
   private readonly notifications: NotificationAuthority;
+  protected readonly store: SqlStore;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const store = new SqlStore(new DurableSql(ctx.storage), { info: () => registrationAuthority(env).info(), complete: (id, admission, mode) => registrationAuthority(env).complete(id, admission, mode) }, { reserve: (email, ip, now) => emailRateLimit(env).reserve(email, ip, now) });
+    this.store = store;
     this.notifications = new NotificationAuthority(store);
-    store.onCommit(() => this.ctx.waitUntil(this.refreshNotifications()));
+    store.temporary.onChange(() => this.ctx.waitUntil(this.refreshNotifications()));
     this.service = new VaultService(store, { allowRegistration: env.ALLOW_REGISTRATION === "true", requireEmailVerification: env.REQUIRE_EMAIL_VERIFICATION !== "false" }, undefined, workerPassword, this.mailTransport(env));
+    this.ctx.blockConcurrencyWhile(async () => {
+      if (await this.ctx.storage.getAlarm() === null) { store.temporary.sweep(); await this.refreshNotifications(); }
+    });
   }
   private async refreshNotifications(): Promise<void> {
-    let deadline = Infinity;
+    let deadline = this.store.temporary.nextExpiry() ?? Infinity;
     for (const ws of this.ctx.getWebSockets()) {
       if (ws.readyState !== 1) continue;
       const state = ws.deserializeAttachment() as NotificationState | null;
@@ -63,12 +98,11 @@ export class AccountVault extends DurableObject<Env> {
       if (next) { ws.serializeAttachment(next.state); deadline = Math.min(deadline, next.expiresAt); }
     }
     // 使用存储 alarm，不用常驻 interval 阻止 DO 休眠。alarm 仅调度，权限始终重读账号。
-    await (Number.isFinite(deadline) ? this.ctx.storage.setAlarm(deadline * 1000) : this.ctx.storage.deleteAlarm());
+    await (Number.isFinite(deadline) ? this.ctx.storage.setAlarm(Math.max(Date.now() + 1, deadline * 1000)) : this.ctx.storage.deleteAlarm());
   }
   async fetch(request: Request): Promise<Response> {
     try {
-      const accountId = notificationPath(request), credentials = requestAuth(request), sockets = this.ctx.getWebSockets().filter(ws => ws.readyState === 1);
-      if (sockets.length >= 256 || sockets.filter(ws => (ws.deserializeAttachment() as NotificationState | null)?.deviceId === credentials.deviceId).length >= 4) throw new Fault(429, "notification_capacity_reached");
+      const accountId = notificationPath(request), credentials = requestAuth(request);
       const state = await this.notifications.consume(accountId, credentials);
       const active = this.ctx.getWebSockets().filter(ws => ws.readyState === 1);
       if (active.length >= 256 || active.filter(ws => (ws.deserializeAttachment() as NotificationState | null)?.deviceId === credentials.deviceId).length >= 4) throw new Fault(429, "notification_capacity_reached");
@@ -77,7 +111,7 @@ export class AccountVault extends DurableObject<Env> {
       return new Response(null, { status: 101, webSocket: pair[0], headers: { "cache-control": "no-store" } });
     } catch (error) { const f = error instanceof Fault ? error : new Fault(500, "internal_error"); return Response.json({ error: f.code }, { status: f.status, headers: { "cache-control": "no-store" } }); }
   }
-  async alarm(): Promise<void> { await this.refreshNotifications(); }
+  async alarm(): Promise<void> { this.store.temporary.sweep(); await this.refreshNotifications(); }
   webSocketMessage(ws: WebSocket): void {
     const state = ws.deserializeAttachment() as NotificationState | null;
     if (state) this.notifications.deliver(state, ws);
@@ -99,7 +133,10 @@ export class AccountVault extends DurableObject<Env> {
     const routed = parsed.pathname.match(/^\/v1\/accounts\/([^/]+)\//)?.[1];
     if (routed && routed !== accountId) return { status: 403, headers: {}, body: '{"error":"account_binding_invalid"}' };
     try {
-      if (!this.service.store.read(accountId)) return { status: 401, headers: {}, body: '{"error":"unauthorized"}' };
+      if (routed && !this.service.store.read(accountId)) {
+        const error = parsed.pathname.endsWith('/email-verification/complete') ? 'registration_expired' : 'unauthorized';
+        return { status: 401, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body: JSON.stringify({ error }) };
+      }
     } catch (error) {
       // 在 DO 内转成固定错误响应；RPC 序列化不会保留自定义 Fault 类型。
       const fault = error instanceof Fault ? error : new Fault(500, "internal_error");
@@ -117,6 +154,9 @@ async function workerFetch(request: Request, env: Env): Promise<Response> {
       const clientIP = canonicalClientIP(request.headers.get("cf-connecting-ip"));
       if (url.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) throw new Fault(400, "https_required");
       if(url.pathname==="/protocol-info")return protocolInfoResponse(request);
+      // 在 RPC 边界外返回固定错误，避免错误类型在序列化时丢失。
+      if (['/instance-info', '/v1/register', '/v1/login', '/v1/email-verification/request', '/v1/account-reset/request', '/v1/account-reset/resolve'].includes(url.pathname)
+        && !await instanceRegistry(env).supportsFormat()) throw new Fault(409, 'account_format_unsupported');
       if (url.pathname === "/instance-info") {
         if (request.method !== "GET") throw new Fault(405, "method_not_allowed");
         if (url.search) throw new Fault(400, "query_forbidden");
@@ -144,13 +184,9 @@ async function workerFetch(request: Request, env: Env): Promise<Response> {
         if (!request.headers.get("content-type")?.startsWith("application/json")) throw new Fault(415, "json_required");
         let b: unknown; try { b = JSON.parse(payload ?? "null"); } catch { throw new Fault(400, "json_invalid"); }
         if (!b || typeof b !== "object" || !("email" in b) || typeof b.email !== "string" || !("credential" in b) || typeof b.credential !== "string") throw new Fault(400, "login_input_invalid");
-        credential(b.credential); const email = normalizeEmail(b.email), candidate = crypto.randomUUID();
-        await env.DIRECTORY.prepare("CREATE TABLE IF NOT EXISTS account_directory (email TEXT PRIMARY KEY, account_id TEXT UNIQUE NOT NULL)").run();
-        // D1 reserves only the routing identity. No credential, generation, permission or proof is duplicated here.
-        await env.DIRECTORY.prepare("INSERT INTO account_directory(email,account_id) VALUES(?,?) ON CONFLICT(email) DO NOTHING").bind(email, candidate).run();
-        const reserved = await env.DIRECTORY.prepare("SELECT account_id FROM account_directory WHERE email=?").bind(email).first<{ account_id: string }>();
-        if (!reserved) throw new Fault(503, "directory_unavailable");
-        const reply = await env.ACCOUNTS.getByName(reserved.account_id).register(reserved.account_id, email, b.credential, clientIP);
+        credential(b.credential); const email = normalizeEmail(b.email);
+        const accountId = await instanceRegistry(env).resolveAccount(email);
+        const reply = await env.ACCOUNTS.getByName(accountId).register(accountId, email, b.credential, clientIP);
         return new Response(reply.body, { status: reply.status, headers: reply.headers });
       }
       let accountId = url.pathname.match(/^\/v1\/accounts\/([A-Za-z0-9._:-]+)\//)?.[1];
@@ -161,23 +197,14 @@ async function workerFetch(request: Request, env: Env): Promise<Response> {
         let b: unknown; try { b = JSON.parse(payload ?? "null"); } catch { throw new Fault(400, "json_invalid"); }
         if (!b || typeof b !== "object" || !("email" in b) || typeof b.email !== "string" || Object.keys(b).sort().join("|") !== (resolving ? "code|email" : "email")) throw new Fault(400, "fields_invalid");
         if (resolving && (!("code" in b) || typeof b.code !== "string" || !normalizeEmailCode(b.code))) throw new Fault(400, "email_code_invalid");
-        const row = await env.DIRECTORY.prepare("SELECT account_id FROM account_directory WHERE email=?").bind(normalizeEmail(b.email)).first<{ account_id: string }>();
-        accountId = row?.account_id;
-        if (!accountId) {
-          if (resolving) throw new Fault(401, "email_code_invalid");
-          await reserveEmailSend(emailRateLimit(env), normalizeEmail(b.email), clientIP, Math.floor(Date.now() / 1000));
-          return Response.json({ accepted: true }, { headers: { "cache-control": "no-store" } });
-        }
+        accountId = await instanceRegistry(env).resolveAccount(normalizeEmail(b.email));
       }
       if (url.pathname === "/v1/login" && request.method === "POST") {
         if (!request.headers.get("content-type")?.startsWith("application/json")) throw new Fault(415, "json_required");
         let b: unknown; try { b = JSON.parse(payload ?? "null"); } catch { throw new Fault(400, "json_invalid"); }
         if (!b || typeof b !== "object" || !("email" in b) || typeof b.email !== "string" || !("credential" in b) || typeof b.credential !== "string") throw new Fault(400, "login_input_invalid");
         credential(b.credential);
-        // D1 only maps email to account. Verifiers, generations, grants and tokens live exclusively in the DO.
-        const row = await env.DIRECTORY.prepare("SELECT account_id FROM account_directory WHERE email=?").bind(normalizeEmail(b.email)).first<{ account_id: string }>();
-        accountId = row?.account_id;
-        if (!accountId) { await workerPassword.verify(b.credential, DUMMY_VERIFIER); throw new Fault(401, "unauthorized"); }
+        accountId = await instanceRegistry(env).resolveAccount(normalizeEmail(b.email));
       }
       if (!accountId) throw new Fault(404, "not_found");
       const reply = await env.ACCOUNTS.getByName(accountId).handle(accountId, request.method, request.url, Array.from(request.headers), payload, clientIP);

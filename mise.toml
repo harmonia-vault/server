@@ -72,3 +72,7 @@ run = "pnpm exec tsx --test test/recovery-dag-http.test.ts test/environment-dag.
 
 [tasks.test-dag-transport]
 run = "pnpm exec tsx --test test/notifications.test.ts test/worker-notifications.test.ts test/protocol-info.test.ts"
+
+[tasks.test-temporary]
+description = "检查临时状态过期、无人访问清理、重启和事务边界"
+run = "pnpm exec tsx --test test/temporary-store.test.ts test/temporary-worker.test.ts test/pending-pairings.test.ts test/recovery-operation-resolution.test.ts"

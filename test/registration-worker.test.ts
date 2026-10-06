@@ -33,7 +33,7 @@ test("真实workerd closed非独占pending/并发首号CAS、冻结verify、终�
  const done=await h.post(`/v1/accounts/${winner.accountId}/account-reset/complete`,{accountGeneration:"1",challengeId:reset.challengeId,token:reset.token,newCredential:"cd".repeat(32),confirmation:"DELETE_OLD_VAULT"});assert.equal(done.status,200,await done.clone().text());assert.equal((await (await h.vault(winner.accountId)).account(winner.accountId))!.verificationRequiredAtRegistration,true);
  await h.set(true,false);const optional=await h.post("/v1/register",{email:"optional@example.invalid",credential:clientCredential});assert.equal(optional.status,200);const optionalId=(await optional.json() as {accountId:string}).accountId;assert.equal((await (await h.vault(optionalId)).account(optionalId))!.verified,false);await h.set(false,true);assert.equal((await h.post("/v1/login",{email:"optional@example.invalid",credential:clientCredential})).status,200);
  for(const a of [...accounts,{accountId:optionalId}])await (await h.vault(a.accountId)).removeAccount(a.accountId);await h.set(false,true);assert.equal((await h.info()).initialRegistrationAvailable,false);assert.equal((await h.post("/v1/register",{email:"new@example.invalid",credential:clientCredential})).status,403);
- const db=await h.mf.getD1Database("DIRECTORY");assert.deepEqual((await db.prepare("PRAGMA table_info(account_directory)").all<{name:string}>()).results.map(r=>r.name),["email","account_id"]);
+ const db=await h.mf.getD1Database("DIRECTORY");assert.equal((await db.prepare("SELECT name FROM sqlite_master WHERE name='account_directory'").all()).results.length,0);
 }));
 for(const fault of ["decision","activation"] as const)test(`真实workerd ${fault}持久失败/重启原短码补全，wrongcredential不可激活`,{timeout:120000},async()=>harness(async h=>{
  const r=await h.post("/v1/register",{email:"crash@example.invalid",credential:clientCredential});assert.equal(r.status,200);const id=(await r.json() as {accountId:string}).accountId,p=verificationCode((await (await h.vault(id)).mails())[0]!, id);
@@ -41,7 +41,7 @@ for(const fault of ["decision","activation"] as const)test(`真实workerd ${faul
  await h.set(false,false);assert.equal((await h.post("/v1/login",{email:"crash@example.invalid",credential:"ee".repeat(32)})).status,401);assert.equal((await (await h.vault(id)).account(id))!.registrationAdmission!.state,"proof-ready");
  if(fault==="decision")await (await h.registry()).disarm();else await (await h.vault(id)).clearFault();assert.equal((await complete(h.post,p)).status,200);assert.equal((await h.post("/v1/login",{email:"crash@example.invalid",credential:clientCredential})).status,200);
 }));
-test("真实workerd拒绝缺注册记录的旧账号，孤D1不接管首次注册", { timeout: 120000 }, async () => harness(async h => {
+test("真实workerd拒绝缺注册记录的旧账号，不接管首次注册", { timeout: 120000 }, async () => harness(async h => {
   const account = await fixtureAccount("obsolete-account", "obsolete@example.invalid");
   const malformed = structuredClone(account) as unknown as Record<string, unknown>;
   delete malformed.registrationAdmission;

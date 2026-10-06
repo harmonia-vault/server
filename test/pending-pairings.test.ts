@@ -28,7 +28,7 @@ async function runtime(kind: "node" | "workerd"): Promise<H> {
     const token = b64(Buffer.alloc(32, { login: 61, A: 65, B: 62, C: 63 }[who] ?? 66));
     const response = await mf.dispatchFetch(`https://synthetic.invalid/v1/accounts/${accountId}${path}`, { method, headers: { "Harmonia-Protocol-Major":"2", "content-type": "application/json", authorization: `Bearer ${token}`, "x-harmonia-account-generation": generation, ...(["A", "B", "C"].includes(who) ? { "x-harmonia-device-id": `device-${who}` } : {}) }, ...(method === "GET" ? {} : { body: JSON.stringify(body) }) });
     if (response.status === 200 && path.startsWith("/pairing-requests-")) assert.equal(response.headers.get("cache-control"), "no-store"); return { status: response.status, data: await response.json() };
-  }, read: async () => JSON.parse(await stub.snapshotSynthetic(a.id)) as RecoveryDAGAccount, change: async f => { const copy = JSON.parse(await stub.snapshotSynthetic(a.id)) as RecoveryDAGAccount; f(copy); await stub.replaceSynthetic(a.id, JSON.stringify(copy)); const persisted = JSON.parse(await stub.snapshotSynthetic(a.id)); assert.deepEqual(persisted, copy, "synthetic negative fixture must persist before real HTTP"); }, close: async () => { await mf.dispose(); rmSync(dir, { recursive: true, force: true }); } };
+  }, read: async () => JSON.parse(await stub.snapshotSynthetic(a.id)) as RecoveryDAGAccount, change: async f => { const copy = JSON.parse(await stub.snapshotSynthetic(a.id)) as RecoveryDAGAccount; f(copy); await stub.replaceSynthetic(a.id, JSON.stringify(copy)); }, close: async () => { await mf.dispose(); rmSync(dir, { recursive: true, force: true }); } };
 }
 const route = (version: "5") => `/pairing-requests-v${version}`;
 async function begin(h: H, version: "5", key: string, approver = "B") {
@@ -53,6 +53,26 @@ async function approve(h: H, started: Awaited<ReturnType<typeof begin>>, complet
   if (complete) { const result = await h.send(`/pairings-v${version}/${key}/complete`, "POST", { signature: sign(fields, seed) }, "login"); assert.equal(result.status, 200, JSON.stringify(result.data)); }
 }
 for (const kind of ["node", "workerd"] as const) {
+  test(`${kind} expired pairing removes transient payload but never reuses the operation ID`, async () => {
+    const h = await runtime(kind);
+    try {
+      const attempt = await begin(h, '5', 'once');
+      await h.change(a => { a.dagPairingSessions!.once!.context.expiresAt = '1'; });
+      const retry = await h.send('/pairings-v5', 'POST', {
+        idempotencyKey: 'once', deviceId: attempt.context.initiatorDeviceId,
+        signingPublicKey: attempt.context.initiatorSigningPublicKey, receivingPublicKey: attempt.context.initiatorReceivingPublicKey,
+        approverDeviceId: 'device-B', certificateVersion: '5', capabilities: ['issuer-recovery-dag-v1'],
+      }, 'login');
+      assert.equal(retry.status, 403); assert.equal(retry.data.error, 'challenge_invalid');
+      const different = await h.send('/pairings-v5', 'POST', {
+        idempotencyKey: 'once', deviceId: 'different-device',
+        signingPublicKey: attempt.context.initiatorSigningPublicKey, receivingPublicKey: attempt.context.initiatorReceivingPublicKey,
+        approverDeviceId: 'device-B', certificateVersion: '5', capabilities: ['issuer-recovery-dag-v1'],
+      }, 'login');
+      assert.equal(different.status, 403);
+      assert.equal((await h.read()).dagPairingSessions!.once, undefined);
+    } finally { await h.close(); }
+  });
   test(`${kind}真实HTTP DAG最小投影/固定排序/别的approver与账户隔离/无降级`, { timeout: 120000 }, async () => {
     const h = await runtime(kind); try {
       const a = await begin(h, "5", "z-own"), b = await begin(h, "5", "a-own"); await begin(h, "5", "other-approver", "A");

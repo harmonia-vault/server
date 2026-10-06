@@ -17,8 +17,8 @@ import { auth, clientCredential, fixtureAccount, now, mutation, seeds, email } f
 const id = "synthetic-account", replacement = "cd".repeat(32);
 const denies = (code: string) => (e: unknown): boolean => e instanceof Fault && e.code === code;
 async function context(run: (c: ReturnType<typeof nodeStore>, account: AccountLifecycle, vault: VaultService, mails: Email[], path: string, advance: (seconds: number) => void) => Promise<void>): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "harmonia-account-test-")), path = join(dir, "account.sqlite"), c = nodeStore(path), mails: Email[] = [];
   let clock = now;
+  const dir = mkdtempSync(join(tmpdir(), "harmonia-account-test-")), path = join(dir, "account.sqlite"), c = nodeStore(path, () => clock), mails: Email[] = [];
   const mail = { send: async (message: Email): Promise<void> => { mails.push(message); } };
   const account = new AccountLifecycle(c.store, wasmPassword, () => clock, mail);
   const vault = new VaultService(c.store, { allowRegistration: true, requireEmailVerification: true }, () => clock, wasmPassword, mail);
@@ -46,7 +46,7 @@ test("verification tokens are purpose/account/generation bound, expiring, and on
   await assert.rejects(account.verifyEmail(p.accountId, { ...p, accountGeneration: "2" }), denies("generation_stale"));
   await assert.rejects(account.resolveCode(email, p.code), denies("email_code_invalid"));
   store.transaction(p.accountId, a => { a.emailProofs![0]!.expiresAt = now; });
-  await assert.rejects(account.verifyEmail(p.accountId, p), denies("email_code_expired"));
+  await assert.rejects(account.verifyEmail(p.accountId, p), denies("email_code_invalid"));
 }));
 test("mail failures remove the unusable proof and configuration absence stays fail closed", async () => context(async ({ store }, account, vault, mails, _path, advance) => {
   await assert.rejects(new AccountLifecycle(store, wasmPassword, () => now).register(email, clientCredential, vault.policy), denies("email_verification_unavailable"));
@@ -71,7 +71,7 @@ test("email-owned destructive reset atomically clears every old authority and su
   await assert.rejects(account.reset(id, { ...input, newCredential: "ef".repeat(32) }), denies("idempotency_conflict"));
   const cleared = store.read(id)!;
   assert.equal(cleared.sequence, 0); assert.deepEqual(cleared.devices, {}); assert.deepEqual(cleared.environments, {}); assert.deepEqual(cleared.grants, {}); assert.deepEqual(cleared.sessions, []); assert.deepEqual(cleared.events, []); assert.deepEqual(cleared.idempotency, {});
-  assert.equal(cleared.recoverySigningPublicKey, null); assert.equal(cleared.recoveryReceivingPublicKey, null); assert.equal(cleared.trustRoot, undefined); assert.equal(cleared.bootChallenges, undefined); assert.equal((cleared as any).recoveryRotations, undefined); assert.equal(cleared.emailProofs, undefined); assert.equal((cleared as unknown as Record<string, unknown>).futurePairingNonce, undefined);
+  assert.equal(cleared.recoverySigningPublicKey, null); assert.equal(cleared.recoveryReceivingPublicKey, null); assert.equal(cleared.trustRoot, undefined); assert.deepEqual(cleared.bootChallenges, []); assert.equal((cleared as any).recoveryRotations, undefined); assert.deepEqual(cleared.emailProofs, []); assert.equal((cleared as unknown as Record<string, unknown>).futurePairingNonce, undefined);
   assert.equal(JSON.stringify(cleared).includes(p.token), false); assert.equal(JSON.stringify(cleared).includes(replacement), false);
   await assert.rejects(vault.pull(id, auth("reader"), 0), denies("generation_stale"));
   await assert.rejects(vault.mutate(id, auth(), mutation()), denies("generation_stale"));

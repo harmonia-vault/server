@@ -4,7 +4,7 @@ import {SyntheticVault} from './worker-harness.js';
 import type {Account} from '../src/model.js';
 export {InstanceRegistry};
 export class ClosureSyntheticVault extends SyntheticVault {
-  replace(account: Account): void { this.ctx.storage.sql.exec('UPDATE accounts SET data=? WHERE id=?', JSON.stringify(account), account.id); }
+  replace(account: Account): void { this.persistSynthetic(account, false); }
   closureFault(on: boolean): void {
     this.ctx.storage.sql.exec('DROP TRIGGER IF EXISTS synthetic_closure_fault');
     if (on) this.ctx.storage.sql.exec("CREATE TRIGGER synthetic_closure_fault BEFORE UPDATE ON accounts WHEN json_extract(NEW.data,'$.recoveryOperationClosures') IS NOT NULL AND json_extract(OLD.data,'$.recoveryOperationClosures') IS NULL BEGIN SELECT RAISE(ABORT,'synthetic closure write failure'); END");

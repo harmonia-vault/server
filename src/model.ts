@@ -19,7 +19,7 @@ export interface Event { sequence: number; mutation: SignedMutation; authorizati
 export interface Session { tokenHash: string; generation: string; expiresAt: number; kind: "login" | "recovery"; deviceId?: string; recoveryGeneration?: string; rotationRequired?: boolean; id?: string }
 export interface DeviceChallenge { id: string; deviceId: string; sessionHash: string; nonce: string; expiresAt: number; generation: string }
 export interface Account {
-  schema: 2; id: string; email: string; generation: string; verified: boolean; passwordVerifier: string;
+  schema: 3; id: string; email: string; generation: string; verified: boolean; passwordVerifier: string;
   verificationRequiredAtRegistration: boolean;
   registrationAdmission: import("./registration.js").RegistrationAdmission;
   sequence: number; devices: Record<string, Device>; environments: Record<string, Environment>;
