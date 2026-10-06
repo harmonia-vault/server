@@ -21,31 +21,30 @@ run = "pnpm build"
 run = "pnpm exec wrangler deploy --dry-run --outdir .wrangler/dry-run"
 env = { WRANGLER_SEND_METRICS = "false" }
 
+[tasks."worker:types"]
+run = "pnpm worker:types"
+
 [tasks.check]
 depends = ["typecheck", "test", "build"]
 
 [tasks."sync:lint"]
 description = "检查服务更新脚本"
-run = ["actionlint .github/workflows/sync-upstream.yml", "shellcheck scripts/sync-upstream.sh", "node --check scripts/upstream-base.mjs"]
+run = ["actionlint .github/workflows/*.yml", "shellcheck scripts/sync-upstream.sh", "node --check scripts/upstream-base.mjs"]
 
 [tasks."sync:test"]
 description = "验证服务更新"
 run = "pnpm exec tsx --test test/sync-upstream.test.ts"
 
-[tasks."sync:init"]
-description = "准备服务更新"
-depends = ["deps"]
-run = "node scripts/upstream-base.mjs --initialize"
-
 [tasks."sync:upstream"]
 description = "创建服务更新请求"
 run = '''
 set -eu
+sync_tools_dir="$PWD/scripts"
 gh auth setup-git --hostname github.com
-git fetch --no-tags https://github.com/harmonia-vault/server.git refs/heads/main:refs/remotes/upstream/main
-# 合并可能更新脚本本身；本次始终执行合并前的副本。
-cp scripts/sync-upstream.sh "${RUNNER_TEMP:?}/harmonia-sync-upstream.sh"
-bash "$RUNNER_TEMP/harmonia-sync-upstream.sh" scripts/upstream-base.mjs
+# 更新工具和待合并源快照来自同一上游检出，部署副本只作为数据读取。
+git -C "${SYNC_REPOSITORY_DIR:?}" fetch --no-tags "$PWD" HEAD:refs/remotes/upstream/main
+cd "$SYNC_REPOSITORY_DIR"
+bash "$sync_tools_dir/sync-upstream.sh" "$sync_tools_dir/upstream-base.mjs"
 '''
 
 [tasks.test-email-limits]

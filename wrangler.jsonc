@@ -34,8 +34,7 @@
   "d1_databases": [
     {
       "binding": "DIRECTORY",
-      "database_name": "harmonia-directory",
-      "database_id": "00000000-0000-0000-0000-000000000000"
+      "database_name": "harmonia-directory"
     }
   ],
   "vars": {

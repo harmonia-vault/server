@@ -1,0 +1,59 @@
+name: 准备服务更新
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository != 'harmonia-vault/server' && github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: upstream
+    steps:
+      - name: 读取服务代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: deployment
+          fetch-depth: 0
+          persist-credentials: false
+
+      # github 上下文属于调用方；显式读取上游，避免执行部署副本中的旧工具。
+      - name: 读取更新工具
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: harmonia-vault/server
+          ref: main
+          path: upstream
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 准备更新工具
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
+        with:
+          version: 2026.7.5
+          working_directory: upstream
+
+      - name: 准备更新环境
+        run: mise run deps
+
+      - name: 创建更新请求
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INITIAL_UPSTREAM_COMMIT: ${{ inputs.version }}
+          SYNC_REPOSITORY_DIR: ${{ github.workspace }}/deployment
+        run: mise run sync:upstream

@@ -9,50 +9,12 @@ on:
         type: string
 
 permissions:
-  contents: read
-
-concurrency:
-  group: sync-upstream-${{ github.ref }}
-  cancel-in-progress: false
+  contents: write
+  pull-requests: write
 
 jobs:
   sync:
     if: github.repository != 'harmonia-vault/server' && github.ref_type == 'branch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: 检查更新权限
-        env:
-          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
-        run: |
-          if [[ -z "$GH_TOKEN" ]]; then
-            echo '::error::尚未授权更新，请按运行摘要中的步骤授权后重试。'
-            cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
-          请完成以下设置后重新运行：
-
-          1. [创建 Fine-grained token](https://github.com/settings/personal-access-tokens/new)，仅选择自己的服务仓库，将 **Contents、Pull requests、Workflows** 设为 **Read and write**。
-          2. 在服务仓库的 **Settings → Secrets and variables → Actions** 中添加 Secret，名称填 `UPSTREAM_SYNC_TOKEN`，值填刚创建的令牌。
-          EOF
-            exit 1
-          fi
-
-      - name: 读取服务代码
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.ref_name }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: 准备更新工具
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
-        with:
-          version: 2026.7.5
-
-      - name: 准备更新环境
-        run: mise run deps
-
-      - name: 创建更新请求
-        env:
-          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
-          INITIAL_UPSTREAM_COMMIT: ${{ inputs.version }}
-        run: mise run sync:upstream
+    uses: harmonia-vault/server/.github/workflows/sync-upstream-reusable.yml@main
+    with:
+      version: ${{ inputs.version }}

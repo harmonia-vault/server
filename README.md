@@ -2,22 +2,29 @@
 
 Harmonia（和弦）是一个自托管的环境变量同步工具：在手机上集中管理环境变量，按设备授权，同步到电脑和运行环境中使用。
 
-本仓库是 Harmonia 的服务端，负责账号与数据同步，可一键部署到 Cloudflare Workers。变量在客户端加密后上传，服务端仅保存密文。需配合 [手机端](https://github.com/harmonia-vault/mobile)与[命令行客户端](https://github.com/harmonia-vault/core-go)使用。
-
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/harmonia-vault/server)
+本仓库是 Harmonia 的服务端，负责账号与数据同步，部署在 Cloudflare Workers 上。需配合 [手机端](https://github.com/harmonia-vault/mobile)与[命令行客户端](https://github.com/harmonia-vault/core-go)使用。
 
 ## 部署
 
 需要 Cloudflare 与 GitHub 账号，以及一个用于发信的域名。
 
+### Fork 部署（推荐）
+
 1. 在 Cloudflare 中启用 [Email Service](https://developers.cloudflare.com/email-service/) 并验证发信域名，用于发送注册和账号重置验证码。
-2. 点击上方 **Deploy to Cloudflare**，连接 GitHub，确认仓库与 Worker 名称。
-3. 在配置页面将 `EMAIL_FROM` 设为该域名下的发件地址，其余配置见下文。
-4. 部署完成后，记录 Worker 的 HTTPS 地址，例如 `https://harmonia-server.<子域名>.workers.dev`。
+2. [Fork 本仓库](https://github.com/harmonia-vault/server/fork)，按[配置](#配置)填写发件地址。
+3. 在 Cloudflare 的 **My Profile → API Tokens** 中，使用 **Edit Cloudflare Workers** 模板创建令牌，并添加 **Account → D1 → Edit** 权限。
+4. 在 **Workers & Pages → Create application** 中连接自己的 Fork，选择 `main` 分支和刚创建的令牌，Worker 名称填 `harmonia-server`。
+5. 完成部署，记录 Worker 的 HTTPS 地址。
+
+### 一键部署
+
+完成上述发信域名设置后，也可使用一键部署，在配置页面填写[配置项](#配置)。后续通过 [Actions 更新](#actions-更新)。
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/harmonia-vault/server)
 
 ## 配置
 
-可在部署页面或 Worker 的 **Settings → Variables and Secrets** 中修改：
+配置项位于仓库的 `wrangler.jsonc` 文件中的 `vars`，修改后提交即可部署：
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -34,13 +41,19 @@ Harmonia（和弦）是一个自托管的环境变量同步工具：在手机上
 
 ## 更新
 
-一键部署会在你的 GitHub 账号下创建独立仓库，不会自动同步本仓库的更新，需手动更新：
+### Fork 更新
 
-1. 确认自己的仓库包含 [`.github/workflows/sync-upstream.yml`](https://github.com/harmonia-vault/server/blob/main/.github/workflows/sync-upstream.yml)；如缺失，在相同路径新建该文件并复制内容。
-2. 在 **Actions → 更新服务** 中运行工作流。首次运行会提示完成授权，按提示设置后重新运行。
-3. 按生成的 Pull Request 中的说明合并，Cloudflare 将自动部署新版本。
+在自己的仓库点击 **Sync fork → Update branch**，Cloudflare 会自动部署更新。
 
-通过 Fork 部署的仓库，可直接使用 GitHub 的 **Sync fork → Update branch** 更新。
+### Actions 更新
+
+一键部署创建的仓库使用此方式，无需创建 GitHub 个人令牌。
+
+1. 首次使用：将[更新入口](https://github.com/harmonia-vault/server/blob/main/.github/workflows/sync-upstream.yml)复制到自己仓库的 `.github/workflows/sync-upstream.yml`；在 **Settings → Actions → General → Workflow permissions** 中勾选 **Allow GitHub Actions to create and approve pull requests**。
+2. 在 **Actions → 更新服务 → Run workflow** 中选择 Cloudflare 绑定的分支并运行。
+3. 合并生成的 Pull Request，Cloudflare 会自动部署更新。
+
+相比 Fork，此方式首次需要手动设置，每次更新需要运行 Actions 并合并 PR；仓库中的工作流文件不会自动更新，入口或权限要求变化时仍需手动调整。
 
 ## 注意事项
 

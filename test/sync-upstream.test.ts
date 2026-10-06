@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -54,7 +54,7 @@ function fixture(t: TestContext, standalone = false) {
     compatibility_date: "2026-10-02",
     durable_objects: { bindings: [{ name: "ACCOUNTS", class_name: "AccountVault" }] },
     migrations: [{ tag: "v1", new_sqlite_classes: ["AccountVault"] }],
-    d1_databases: [{ binding: "DIRECTORY", database_name: "harmonia-directory", database_id: "00000000-0000-0000-0000-000000000000" }],
+    d1_databases: [{ binding: "DIRECTORY", database_name: "harmonia-directory" }] as { binding: string; database_name: string; database_id?: string }[],
     vars: { EMAIL_FROM: "", ALLOW_REGISTRATION: "false" },
   };
   function writeConfig(cwd: string, config: object): void {
@@ -64,6 +64,9 @@ function fixture(t: TestContext, standalone = false) {
   writeFileSync(join(upstream, "package.json"), '{"name":"harmonia-server","private":true}\n');
   mkdirSync(join(upstream, ".github/workflows"), { recursive: true });
   writeFileSync(join(upstream, ".github/workflows/check.yml"), "name: initial upstream workflow\n");
+  mkdirSync(join(upstream, "scripts"));
+  writeFileSync(join(upstream, "scripts/sync-upstream.sh"), "exit 99\n");
+  writeFileSync(join(upstream, "scripts/upstream-base.mjs"), "throw new Error('obsolete update tool');\n");
   writeFileSync(join(upstream, "version.txt"), "version one\n");
   commit(upstream, "initial upstream");
   git(root, "init", "--bare", origin);
@@ -86,12 +89,29 @@ function fixture(t: TestContext, standalone = false) {
     commit(deployed, "source repo import");
     git(deployed, "branch", "-M", "production");
   }
+  writeFileSync(join(deployed, ".github/workflows/sync-upstream.yml"), "name: fixed update entry\n");
+  commit(deployed, "install update entry");
   git(deployed, "push", "origin", "production");
+  // A stricter local guard checks every newly introduced commit, not just the PR diff.
+  // This is a Git-level regression check; it does not replace testing GitHub token permissions.
+  writeFileSync(join(origin, "hooks/pre-receive"), `#!/bin/sh
+while read -r old new ref; do
+  case "$ref" in
+    refs/heads/sync-upstream/*)
+      for commit in $(git rev-list "$new" --not --all); do
+        git diff --quiet refs/heads/production "$commit" -- .github/workflows || exit 1
+      done
+      ;;
+  esac
+done
+`, { mode: 0o755 });
   // Only the GitHub API boundary is simulated; merge, push and remote refs use real Git.
   writeFileSync(join(bin, "gh"), `#!${process.execPath}
 const { readFileSync, writeFileSync } = require("node:fs");
 const args = process.argv.slice(2);
-if (args[0] === "pr" && args[1] === "list") {
+if (args[0] === "auth" && args[1] === "setup-git") {
+  process.exit(0);
+} else if (args[0] === "pr" && args[1] === "list") {
   process.stdout.write(process.env.TEST_EXISTING_PR || "");
 } else if (args[0] === "pr" && args[1] === "create") {
   if (process.env.TEST_CREATE_FAILURE) process.exit(1);
@@ -117,10 +137,18 @@ if (args[0] === "pr" && args[1] === "list") {
   function refs(): string {
     return git(origin, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads");
   }
-  return { root, upstream, origin, deployed, summary, apiRecord, template, deploymentConfig, git, commit, writeConfig, run, advance, refs };
+  function runTask() {
+    writeFileSync(summary, "");
+    return spawnSync("mise", ["run", "sync:upstream"], {
+      cwd: upstream,
+      env: { ...env, SYNC_REPOSITORY_DIR: deployed, MISE_TRUSTED_CONFIG_PATHS: root },
+      encoding: "utf8",
+    });
+  }
+  return { root, upstream, origin, deployed, summary, apiRecord, template, deploymentConfig, git, commit, writeConfig, run, runTask, advance, refs };
 }
 
-test("同步代码、工作流和新增迁移，保留个人配置，生产分支等待 PR 合并", t => {
+test("同步代码和新增迁移，保留个人配置与工作流，生产分支等待 PR 合并", t => {
   const f = fixture(t);
   const before = f.git(f.origin, "rev-parse", "production");
   f.template.migrations.push({ tag: "v2", new_sqlite_classes: ["NewVault"] });
@@ -138,12 +166,15 @@ test("同步代码、工作流和新增迁移，保留个人配置，生产分�
   assert.equal(config.d1_databases[0].database_id, "11111111-2222-4333-8444-555555555555");
   assert.equal(config.vars.EMAIL_FROM, "hello@example.invalid");
   assert.equal(config.migrations[1].tag, "v2");
-  assert.match(f.git(f.origin, "show", `${head}:.github/workflows/check.yml`), /new upstream workflow/);
-  assert.equal(f.git(f.origin, "rev-parse", `${head}^2`), upstreamCommit);
+  assert.match(f.git(f.origin, "show", `${head}:.github/workflows/check.yml`), /initial upstream workflow/);
+  assert.equal(f.git(f.origin, "rev-parse", `${head}^`), before);
+  assert.equal(f.git(f.origin, "show", `${head}:.github/upstream-base`), upstreamCommit);
+  assert.throws(() => f.git(f.origin, "cat-file", "-e", upstreamCommit));
+  assert.equal(f.git(f.deployed, "status", "--porcelain"), "");
   const pr = JSON.parse(readFileSync(f.apiRecord, "utf8"));
   assert.equal(pr.base, "production");
   assert.equal(pr.head, head);
-  assert.match(pr.body, /Create a merge commit/);
+  assert.match(pr.body, /合并此 Pull Request/);
   assert.match(readFileSync(f.summary, "utf8"), /pull\/1/);
 
   // Simulate the user merging the PR. A repeat must be a no-op, and the next update must retain history.
@@ -208,22 +239,21 @@ test("来源快照不匹配时停止，不强行关联独立仓库", t => {
   assert.equal(f.refs(), before);
 });
 
-test("独立导入仓库核对来源后初始化，恢复被移除的工作流并保留实例修改", t => {
+test("独立导入仓库核对来源后初始化，保留固定入口而不恢复上游工作流", t => {
   const f = fixture(t, true);
-  const source = f.git(f.upstream, "rev-parse", "HEAD");
   writeFileSync(join(f.deployed, "local-only.txt"), "user customization\n");
   f.commit(f.deployed, "local customization after import");
   f.git(f.deployed, "push", "origin", "production");
   const before = f.git(f.origin, "rev-parse", "production");
-  f.advance();
+  const latest = f.advance();
   const result = f.run();
   assert.equal(result.status, 0, result.stderr);
   assert.equal(f.git(f.origin, "rev-parse", "production"), before);
   const head = "sync-upstream/42-1";
-  assert.equal(f.git(f.origin, "show", `${head}:.github/upstream-base`), source);
+  assert.equal(f.git(f.origin, "show", `${head}:.github/upstream-base`), latest);
   assert.equal(f.git(f.origin, "show", `${head}:version.txt`), "version two");
   assert.equal(f.git(f.origin, "show", `${head}:local-only.txt`), "user customization");
-  assert.match(f.git(f.origin, "show", `${head}:.github/workflows/check.yml`), /initial upstream workflow/);
+  assert.equal(f.git(f.origin, "ls-tree", "-r", "--name-only", head, ".github/workflows"), ".github/workflows/sync-upstream.yml");
   assert.match(f.git(f.origin, "show", `${head}:package.json`), /my-deployment/);
   assert.match(f.git(f.origin, "show", `${head}:wrangler.jsonc`), /11111111-2222-4333-8444-555555555555/);
 });
@@ -243,11 +273,21 @@ test("源代码已是最新的独立导入仍生成初始化 PR，合并后再�
   assert.match(readFileSync(f.summary, "utf8"), /已是最新版本/);
 });
 
-test("导入时缺失的工作流造成来源歧义时停止，用户指定经过核对的 SHA 后才初始化", t => {
+test("仅工作流不同的来源视为相同服务版本，首次更新无需用户选择", t => {
   const f = fixture(t, true);
-  const source = f.git(f.upstream, "rev-parse", "HEAD");
   writeFileSync(join(f.upstream, ".github/workflows/check.yml"), "name: updated upstream workflow\n");
-  f.commit(f.upstream, "workflow-only update");
+  const latest = f.commit(f.upstream, "workflow-only update");
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(f.git(f.origin, "show", "sync-upstream/42-1:.github/upstream-base"), latest);
+  assert.equal(f.git(f.origin, "ls-tree", "-r", "--name-only", "sync-upstream/42-1", ".github/workflows"), ".github/workflows/sync-upstream.yml");
+});
+
+test("配置默认值不同导致来源歧义时，核对用户指定的版本后才初始化", t => {
+  const f = fixture(t, true);
+  f.template.vars.EMAIL_FROM = "new-default@example.invalid";
+  f.writeConfig(f.upstream, f.template);
+  const latest = f.commit(f.upstream, "change default configuration");
   const before = f.refs();
   const pending = f.run({ TEST_EXISTING_PR: "https://github.com/synthetic/deployment/pull/8" });
   assert.equal(pending.status, 0, pending.stderr);
@@ -257,10 +297,10 @@ test("导入时缺失的工作流造成来源歧义时停止，用户指定经�
   assert.equal(ambiguous.status, 1);
   assert.match(ambiguous.stderr, /无法确定部署版本/);
   assert.equal(f.refs(), before);
-  const selected = f.run({ INITIAL_UPSTREAM_COMMIT: source });
+  const selected = f.run({ INITIAL_UPSTREAM_COMMIT: latest });
   assert.equal(selected.status, 0, selected.stderr);
-  assert.equal(f.git(f.origin, "show", "sync-upstream/42-1:.github/upstream-base"), source);
-  assert.match(f.git(f.origin, "show", "sync-upstream/42-1:.github/workflows/check.yml"), /updated upstream workflow/);
+  assert.equal(f.git(f.origin, "show", "sync-upstream/42-1:.github/upstream-base"), latest);
+  assert.match(f.git(f.origin, "show", "sync-upstream/42-1:wrangler.jsonc"), /hello@example.invalid/);
 });
 
 test("指定较新的不匹配 SHA 不能把尚未同步的代码冒充已部署版本", t => {
@@ -294,4 +334,88 @@ test("工作区有未提交修改时停止并保留修改", t => {
   assert.match(result.stdout, /有尚未保存的修改/);
   assert.equal(f.refs(), before);
   assert.equal(readFileSync(join(f.deployed, "version.txt"), "utf8"), "unfinished local edit\n");
+});
+
+test("上游新增、删除或修改工作流时，完整保留部署仓库的工作流", t => {
+  const f = fixture(t);
+  writeFileSync(join(f.deployed, ".github/workflows/check.yml"), "name: local check\n");
+  f.commit(f.deployed, "customize local workflow");
+  f.git(f.deployed, "push", "origin", "production");
+  rmSync(join(f.upstream, ".github/workflows/check.yml"));
+  writeFileSync(join(f.upstream, ".github/workflows/sync-upstream.yml"), "name: changed upstream entry\n");
+  writeFileSync(join(f.upstream, ".github/workflows/new.yml"), "name: new upstream workflow\n");
+  f.advance();
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(f.git(f.origin, "diff", "production", "sync-upstream/42-1", "--", ".github/workflows"), "");
+  assert.equal(f.git(f.origin, "show", "sync-upstream/42-1:version.txt"), "version two");
+});
+
+test("仅上游工作流更新时不创建无服务改动的 PR", t => {
+  const f = fixture(t);
+  writeFileSync(join(f.upstream, ".github/workflows/check.yml"), "name: changed upstream check\n");
+  f.commit(f.upstream, "workflow-only update");
+  const before = f.refs();
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(f.refs(), before);
+  assert.match(readFileSync(f.summary, "utf8"), /已是最新版本/);
+});
+
+test("Squash 合并后可继续同步，保留本地修改并正确处理上游删除", t => {
+  const f = fixture(t, true);
+  writeFileSync(join(f.upstream, "removed-later.txt"), "remove this in next update\n");
+  f.advance();
+  const first = f.run();
+  assert.equal(first.status, 0, first.stderr);
+  f.git(f.deployed, "merge", "--squash", "sync-upstream/42-1");
+  f.commit(f.deployed, "squash first update");
+  writeFileSync(join(f.deployed, "local-only.txt"), "keep this customization\n");
+  f.commit(f.deployed, "local customization");
+  f.git(f.deployed, "push", "origin", "production");
+  const before = f.refs();
+  assert.equal(f.run({ GITHUB_RUN_ID: "43" }).status, 0);
+  assert.equal(f.refs(), before);
+  rmSync(join(f.upstream, "removed-later.txt"));
+  writeFileSync(join(f.upstream, "version.txt"), "version three\n");
+  const latest = f.commit(f.upstream, "next service update");
+  const next = f.run({ GITHUB_RUN_ID: "44" });
+  assert.equal(next.status, 0, next.stderr);
+  const head = "sync-upstream/44-1";
+  assert.equal(f.git(f.origin, "show", `${head}:version.txt`), "version three");
+  assert.equal(f.git(f.origin, "show", `${head}:local-only.txt`), "keep this customization");
+  assert.equal(f.git(f.origin, "ls-tree", "--name-only", head, "removed-later.txt"), "");
+  assert.equal(f.git(f.origin, "show", `${head}:.github/upstream-base`), latest);
+});
+
+test("记录的上游版本失效时停止，不推送猜测的合并结果", t => {
+  const f = fixture(t);
+  writeFileSync(join(f.deployed, ".github/upstream-base"), "invalid source\n");
+  f.commit(f.deployed, "invalid source record");
+  f.git(f.deployed, "push", "origin", "production");
+  f.advance();
+  const before = f.refs();
+  const result = f.run();
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /无法读取上次更新的版本/);
+  assert.equal(f.refs(), before);
+});
+
+test("实际 mise 入口使用上游工具及同一源版本，不执行部署副本中的旧脚本", t => {
+  const f = fixture(t, true);
+  copyFileSync(syncScript, join(f.upstream, "scripts/sync-upstream.sh"));
+  copyFileSync(baseScript, join(f.upstream, "scripts/upstream-base.mjs"));
+  copyFileSync(fileURLToPath(new URL("../mise.toml", import.meta.url)), join(f.upstream, "mise.toml"));
+  writeFileSync(join(f.upstream, ".gitignore"), "node_modules/\n");
+  symlinkSync(fileURLToPath(new URL("../node_modules", import.meta.url)), join(f.upstream, "node_modules"), "dir");
+  const latest = f.advance();
+  const productionBefore = f.git(f.origin, "rev-parse", "production");
+  const result = f.runTask();
+  assert.equal(result.status, 0, result.stderr);
+  const head = "sync-upstream/42-1";
+  assert.equal(f.git(f.origin, "show", `${head}:version.txt`), "version two");
+  assert.equal(f.git(f.origin, "show", `${head}:.github/upstream-base`), latest);
+  assert.equal(f.git(f.origin, "rev-parse", "production"), productionBefore);
+  assert.equal(readFileSync(join(f.deployed, "scripts/sync-upstream.sh"), "utf8"), "exit 99\n");
+  assert.match(f.git(f.origin, "show", `${head}:scripts/sync-upstream.sh`), /git merge-tree/);
 });
